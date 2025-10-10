@@ -1,3 +1,13 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
+# ignore all artifacts by default
+boosting_model/artifacts_baseline/**
 
+# allow figures and a tiny sample csv back in
+!boosting_model/artifacts_baseline/figs/**
+!boosting_model/artifacts_baseline/cv_metrics.csv
+
+# global heavy binary patterns
+*.npy
+*.npz
+*.joblib
+*.parquet
+*.pkl
