@@ -1,0 +1,8 @@
+pdb_id,pdb_path,chain1,chain2,lig_code,lig_smiles,lig_resi
+6llw,data/example/example_data/6llw.cif,A,A,UDP,O[C@H]1[C@@H](O)[C@@H](O[C@@H]1CO[P](O)(=O)O[P](O)(O)=O)N2C=CC(=O)NC2=O,900
+3i5x,data/example/example_data/3i5x.cif,A,B,,,
+5kl2,data/example/example_data/5kl2.cif,A,B_C,,,
+6d1u,data/example/example_data/6d1u.cif,A,D,,,
+2uxq,data/example/example_data/2uxq.cif,A,B,,,
+6hrg,data/example/example_data/6hrg.cif,A,A,ZN,,301
+4yaz,data/example/example_data/4yaz.cif,A,A,4BW,NC1=Nc2n(cnc2C(=O)N1)[C@@H]3O[C@@H]4CO[P](O)(=O)O[C@H]5[C@@H](O)[C@@H](O[C@@H]5CO[P](O)(=O)O[C@H]4[C@H]3O)n6cnc7c(N)ncnc67,103
