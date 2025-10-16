@@ -21,4 +21,4 @@ pip3 install orjson
 pip3 install umap-learn
 pip3 install matplotlib
 pip3 install seaborn
-pip3 install plotly
+pip3 install plotly 

@@ -56,9 +56,9 @@ def isolate_pocket_embeddings_vectorized(atomica_output_path: str) -> List[Dict[
 if __name__ == '__main__':
 
     # Path to the pkl file of ATOMICA outputs
-    input_file = 'data/example/example_outputs.pkl'
+    input_file = 'data/example/example_outputs_embedded.pkl'
     # Path to save the cleaned pocket embeddings
-    output_file = 'data/example/example_outputs_pocket.pkl'
+    output_file = 'data/example/example_outputs_embedded_pocket.pkl'
 
 
     print(f"Loading data from '{input_file}' and isolating pocket embeddings...")

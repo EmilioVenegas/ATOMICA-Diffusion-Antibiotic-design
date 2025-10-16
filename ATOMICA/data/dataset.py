@@ -1,5 +1,4 @@
 # Source https://github.com/THUNLP-MT/GET
-
 import os
 import pickle
 import argparse

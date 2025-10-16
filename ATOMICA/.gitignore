@@ -2,7 +2,7 @@ __pycache__
 
 *.txt
 
-*.pt
+
 
 *.png
 
@@ -22,7 +22,6 @@ baselines
 
 datasets
 
-pretrain
 
 run_logs
 

@@ -1,0 +1,23 @@
+{
+    "atom_hidden_size": 32,
+    "block_hidden_size": 32,
+    "edge_size": 32,
+    "n_layers": 4,
+    "dropout": 0.0,
+    "k_neighbors": 8,
+    "global_message_passing": true,
+    "bottom_global_message_passing": false,
+    "fragmentation_method": "PS_300",
+    "atom_noise": false,
+    "translation_noise": true,
+    "rotation_noise": true,
+    "torsion_noise": true,
+    "atom_weight": 1.0,
+    "translation_weight": 1.0,
+    "rotation_weight": 0.1,
+    "torsion_weight": 1.0,
+    "mask_weight": 1.0,
+    "modality_embedding": false,
+    "num_masked_block_classes": 436,
+    "model_type": "DenoisePretrainModel"
+}
