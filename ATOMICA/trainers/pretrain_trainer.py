@@ -1,6 +1,6 @@
 import torch
 from .abs_trainer import Trainer
-from utils.logger import print_log
+from ATOMICA.utils.logger import print_log
 import os
 from tqdm import tqdm
 import wandb

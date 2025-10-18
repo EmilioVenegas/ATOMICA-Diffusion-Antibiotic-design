@@ -13,7 +13,7 @@ import torch
 import biotite.structure as bs
 import biotite.structure.io.pdb as pdb
 
-from utils.logger import print_log
+from ATOMICA.utils.logger import print_log
 from .pdb_utils import Atom, VOCAB, dist_matrix_from_coords
 
 
@@ -45,7 +45,63 @@ class Block:
         return b, a, x, positions, block_len
         
 
+
+
 def blocks_to_data(*blocks_list: List[List[Block]]):
+    B, A, X, atom_positions, block_lengths, segment_ids, A_B = [], [], [], [], [], [], []
+    block_idx_counter = 0
+    for i, blocks in enumerate(blocks_list):
+        if len(blocks) == 0:
+            continue
+        # global node
+        cur_B = [VOCAB.symbol_to_idx(VOCAB.GLB)]
+        cur_A = [VOCAB.get_atom_global_idx()]
+        cur_X = [None]
+        cur_atom_positions = [VOCAB.get_atom_pos_global_idx()]
+        cur_block_lengths = [1]
+        # Create mapping for the global atom to its block
+        cur_A_B = [block_idx_counter]
+        block_idx_counter += 1
+        
+        # other nodes
+        for block in blocks:
+            b, a, x, positions, block_len = block.to_data()
+            cur_B.append(b)
+            cur_A.extend(a)
+            cur_X.extend(x)
+            cur_atom_positions.extend(positions)
+            cur_block_lengths.append(block_len)
+            # Map every atom in this block to the current block's index
+            cur_A_B.extend([block_idx_counter] * block_len)
+            block_idx_counter += 1
+
+        # update coordinates of the global node to the center
+        cur_X[0] = np.mean(cur_X[1:], axis=0).tolist()
+        for x_i, x in enumerate(cur_X):
+            if isinstance(x, np.ndarray):
+                cur_X[x_i] = x.tolist()
+        cur_segment_ids = [i for _ in cur_B]
+        
+        # finish these blocks
+        B.extend(cur_B)
+        A.extend(cur_A)
+        X.extend(cur_X)
+        atom_positions.extend(cur_atom_positions)
+        block_lengths.extend(cur_block_lengths)
+        segment_ids.extend(cur_segment_ids)
+        A_B.extend(cur_A_B) # Add the generated map
+
+    data = {
+        'X': X,   # [Natom, 2, 3]
+        'B': B,             # [Nb], block (residue) type
+        'A': A,             # [Natom]
+        'atom_positions': atom_positions,  # [Natom]
+        'block_lengths': block_lengths,  # [Nresidue]
+        'segment_ids': segment_ids,      # [Nresidue]
+        'A_B': A_B,         # [Natom], atom to block mapping -- THIS IS THE NEW KEY
+    }
+
+    return data
     B, A, X, atom_positions, block_lengths, segment_ids = [], [], [], [], [], []
     for i, blocks in enumerate(blocks_list):
         if len(blocks) == 0:

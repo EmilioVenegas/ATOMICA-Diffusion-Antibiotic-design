@@ -1,10 +1,10 @@
 from tqdm import tqdm
 import pickle
-from data.dataset import PDBDataset, ProtInterfaceDataset
-from models.prediction_model import PredictionModel
-from models.pretrain_model import DenoisePretrainModel
-from models.prot_interface_model import ProteinInterfaceModel
-from trainers.abs_trainer import Trainer
+from ATOMICA.data.dataset import PDBDataset, ProtInterfaceDataset
+from ATOMICA.models.prediction_model import PredictionModel
+from ATOMICA.models.pretrain_model import DenoisePretrainModel
+from ATOMICA.models.prot_interface_model import ProteinInterfaceModel
+from ATOMICA.trainers.abs_trainer import Trainer
 import torch
 import json
 
@@ -55,9 +55,9 @@ def main(args):
                 num_blocks = len(item["data"]["B"])
                 num_atoms = len(item["data"]["A"])
 
-                outputs[i]["graph_embedding"] = return_obj.graph_repr[i].detach().cuda().numpy()
-                outputs[i]["block_embedding"] = return_obj.block_repr[curr_block: curr_block + num_blocks].detach().cuda().numpy()
-                outputs[i]["atom_embedding"] = return_obj.unit_repr[curr_atom: curr_atom + num_atoms].detach().cuda().numpy()
+                outputs[i]["graph_embedding"] = return_obj.graph_repr[i].detach().cpu().numpy()
+                outputs[i]["block_embedding"] = return_obj.block_repr[curr_block: curr_block + num_blocks].detach().cpu().numpy()
+                outputs[i]["atom_embedding"] = return_obj.unit_repr[curr_atom: curr_atom + num_atoms].detach().cpu().numpy()
                 outputs[i]["block_id"] = item["data"]["B"]
                 outputs[i]["atom_id"] = item["data"]["A"]
 
@@ -75,9 +75,9 @@ def main(args):
                         batch = PDBDataset.collate_fn([item["data"] if not isinstance(dataset, ProtInterfaceDataset) else item["prot_data"]])
                         batch = Trainer.to_device(batch, "cuda")
                         return_obj = model.infer(batch)
-                        output["graph_embedding"] = return_obj.graph_repr[0].detach().cuda().numpy()
-                        output["block_embedding"] = return_obj.block_repr.detach().cuda().numpy()
-                        output["atom_embedding"] = return_obj.unit_repr.detach().cuda().numpy()
+                        output["graph_embedding"] = return_obj.graph_repr[0].detach().cpu().numpy()
+                        output["block_embedding"] = return_obj.block_repr.detach().cpu().numpy()
+                        output["atom_embedding"] = return_obj.unit_repr.detach().cpu().numpy()
                         output["block_id"] = item["data"]["B"]
                         output["atom_id"] = item["data"]["A"]
                         outputs.append(output)

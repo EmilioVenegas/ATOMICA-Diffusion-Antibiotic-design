@@ -4,7 +4,7 @@ from torch_scatter import scatter_mean
 import json
 
 from .pretrain_model import DenoisePretrainModel
-from data.pdb_utils import VOCAB
+from ATOMICA.data.pdb_utils import VOCAB
 from .ATOMICA.utils import batchify
 
 

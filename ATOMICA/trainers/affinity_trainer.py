@@ -1,7 +1,7 @@
 from math import exp, log
 import torch
 from .abs_trainer import Trainer
-from utils.logger import print_log
+from ATOMICA.utils.logger import print_log
 from tqdm import tqdm
 import numpy as np
 import wandb

@@ -2,7 +2,7 @@ from collections import namedtuple
 import torch
 from torch_scatter import scatter_mean
 
-from data.pdb_utils import VOCAB
+from ATOMICA.data.pdb_utils import VOCAB
 from .pretrain_model import DenoisePretrainModel
 from .ATOMICA.utils import batchify
 import json

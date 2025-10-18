@@ -3,7 +3,7 @@ import torch.nn.functional as F
 from torch_scatter import scatter_sum, scatter_mean
 import torch
 
-from data.pdb_utils import VOCAB
+from ATOMICA.data.pdb_utils import VOCAB
 from .pretrain_model import DenoisePretrainModel
 from .ATOMICA.utils import batchify
 from .prediction_model import PredictionModel, PredictionReturnValue

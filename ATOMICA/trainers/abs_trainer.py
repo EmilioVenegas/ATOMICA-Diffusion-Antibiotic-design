@@ -7,7 +7,7 @@ from tqdm import tqdm
 import numpy as np
 import torch
 from torch.utils.tensorboard import SummaryWriter
-from utils.logger import print_log
+from ATOMICA.utils.logger import print_log
 import wandb
 
 class TrainConfig:

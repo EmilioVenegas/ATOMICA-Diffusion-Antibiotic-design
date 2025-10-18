@@ -9,8 +9,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_scatter import scatter_mean, scatter_sum
 
-from data.pdb_utils import VOCAB
-from data.dataset import MODALITIES
+from ATOMICA.data.pdb_utils import VOCAB
+from ATOMICA.data.dataset import MODALITIES
 from .tools import BlockEmbedding, KNNBatchEdgeConstructor
 from .ATOMICA.encoder import ATOMICAEncoder, AttentionPooling
 from .tools import CrossAttention
