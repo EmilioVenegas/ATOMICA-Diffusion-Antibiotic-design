@@ -59,5 +59,5 @@ def inspect_pickle_structure(file_path: str):
         print("-" * 20)
 
 if __name__ == '__main__':
-    input_file = 'data/example/example_outputs_embedded.pkl'
+    input_file = 'ATOMICA/data/example/example_outputs_embedded.pkl'
     inspect_pickle_structure(input_file)

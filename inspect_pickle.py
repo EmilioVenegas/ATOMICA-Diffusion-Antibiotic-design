@@ -4,10 +4,11 @@ import sys
 import numpy as np
 
 
-DATA_FILE_PATH = 'data/example/example_outputs.pkl'  
+DATA_FILE_PATH = 'ATOMICA/data/example/example_outputs.pkl'  
+item_num = 1
 
 
-def inspect_data(filepath):
+def inspect_data(filepath, item_num):
     """
     Loads the data file and inspects the structure of the first item
     to help find the pocket/interface mask key.
@@ -44,19 +45,22 @@ def inspect_data(filepath):
 
     print(f"Data is a list with {len(data)} items.")
     print("--- Inspecting the first item (data[0]) ---")
+   
 
-    first_item = data[0]
-    if not isinstance(first_item, dict):
-        print(f"First item is not a dictionary (it's a {type(first_item)}). Stopping.")
+
+
+    n_item = data[item_num]
+    if not isinstance(n_item, dict):
+        print(f"First item is not a dictionary (it's a {type(n_item)}). Stopping.")
         return
 
-    print(f"First item's top-level keys: {list(first_item.keys())}")
+    print(f"First item's top-level keys: {list(n_item.keys())}")
 
     # --- Find the core data dictionary ---
     data_key = None
-    if 'prot_data' in first_item:
+    if 'prot_data' in n_item:
         data_key = 'prot_data'
-    elif 'data' in first_item:
+    elif 'data' in n_item:
         data_key = 'data'
     
     if data_key is None:
@@ -64,11 +68,11 @@ def inspect_data(filepath):
         print("Please inspect the top-level keys above to find your main data dictionary.")
         return
 
-    print(f"\n--- Looking inside 'first_item[{data_key}]' for the mask ---")
+    print(f"\n--- Looking inside 'n_item[{data_key}]' for the mask ---")
     
-    core_data = first_item[data_key]
+    core_data = n_item[data_key]
     if not isinstance(core_data, dict):
-        print(f"'first_item[{data_key}]' is not a dictionary. Stopping.")
+        print(f"'n_item[{data_key}]' is not a dictionary. Stopping.")
         return
 
     # Loop through all keys in the core data dict and print info
@@ -89,9 +93,5 @@ def inspect_data(filepath):
 
 # --- Run the inspection ---
 if __name__ == "__main__":
-    # A simple check to ensure the path was changed
-    if DATA_FILE_PATH == 'path/to/your/data.pkl':
-        print("Error: Please edit the script and set the DATA_FILE_PATH variable.")
-        sys.exit(1)
-        
-    inspect_data(DATA_FILE_PATH)
+           
+    inspect_data(DATA_FILE_PATH, item_num)
