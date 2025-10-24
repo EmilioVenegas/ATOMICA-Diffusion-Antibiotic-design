@@ -77,7 +77,7 @@ def main(folder, out_csv):
             rows = process_cif(cif)
             all_rows.extend(rows)
         except Exception as e:
-            print(f"  ⚠️ error processing {cif}: {e}")
+            print(f"error processing {cif}: {e}")
 
     if not all_rows:
         print("No data extracted.")
