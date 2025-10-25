@@ -8,6 +8,65 @@ import torch
 FLOAT_TYPE = torch.float32
 INT_TYPE = torch.int64
 
+# --- START: ATOMICA Vocabulary Definition ---
+# Source: mims-harvard/atomica/ATOMICA-0f9ae56c23f59920b44caac28a7762f535c3c15d/data/pdb_utils.py
+
+# 1. ATOMICA Atom Vocabulary (for "A" field)
+ATOMS = [ # Periodic Table
+    # 1
+    'H', 'He',
+    # 2
+    'Li', 'Be', 'B', 'C', 'N', 'O', 'F', 'Ne',
+    # 3
+    'Na', 'Mg', 'Al', 'Si', 'P', 'S', 'Cl', 'Ar',
+    # 4
+    'K', 'Ca', 'Sc', 'Ti', 'V', 'Cr', 'Mn', 'Fe', 'Co', 'Ni', 'Cu', 'Zn',
+    'Ga', 'Ge', 'As', 'Se', 'Br', 'Kr',
+    # 5
+    'Rb', 'Sr', 'Y', 'Zr', 'Nb', 'Mo', 'Tc', 'Ru', 'Rh', 'Pd', 'Ag', 'Cd',
+    'In', 'Sn', 'Sb', 'Te', 'I', 'Xe',
+    # 6
+    'Cs', 'Ba', 'La', 'Ce', 'Pr', 'Nd', 'Pm', 'Sm', 'Eu', 'Gd', 'Tb', 'Dy',
+    'Ho', 'Er', 'Tm', 'Yb', 'Lu',
+    'Hf', 'Ta', 'W', 'Re', 'Os', 'Ir', 'Pt', 'Au', 'Hg', 'Tl', 'Pb', 'Bi',
+    'Po', 'At', 'Rn',
+    # 7
+    'Fr', 'Ra', 'Ac', 'Th', 'Pa', 'U', 'Np', 'Pu', 'Am', 'Cm', 'Bk',
+    'Cf', 'Es', 'Fm', 'Md', 'No', 'Lr',
+    'Rf', 'Db', 'Sg', 'Bh', 'Hs', 'Mt', 'Ds', 'Rg', 'Cn', 'Nh', 'Fl', 'Mc',
+    'Lv', 'Ts', 'Og'
+]
+# ATOMICA's atom_decoder includes special tokens 'p', 'm', 'g' at the start
+atomica_atom_decoder = ['p', 'm', 'g'] + ATOMS
+atomica_atom_encoder = {atom: i for i, atom in enumerate(atomica_atom_decoder)}
+
+
+
+#  Helper function to build new bond matrices
+def build_matrix(raw_dict, decoder, default_val=0.0):
+    n = len(decoder)
+    matrix = [[default_val] * n for _ in range(n)]
+    for i in range(n):
+        atom1 = decoder[i]
+        if atom1 not in raw_dict:
+            continue
+        for j in range(i, n): # Only need to compute upper triangle
+            atom2 = decoder[j]
+            
+            val = raw_dict.get(atom1, {}).get(atom2)
+            if val is None:
+                val = raw_dict.get(atom2, {}).get(atom1)
+            
+            if val is not None:
+                matrix[i][j] = val
+                matrix[j][i] = val # Matrix is symmetric
+    return matrix
+
+
+
+# --- END: ATOMICA Vocabulary Definition ---
+
+
 
 # ------------------------------------------------------------------------------
 # Bond parameters
@@ -78,6 +137,17 @@ covalent_radii = {'H': 32, 'C': 60, 'N': 54, 'O': 53, 'F': 53, 'B': 73,
                   'Br': 109, 'I': 125, 'Hg': 133, 'Bi': 135}
 
 # ------------------------------------------------------------------------------
+
+# Generate the new ATOMICA-compatible matrices
+atomica_bonds1_matrix = build_matrix(bonds1, atomica_atom_decoder)
+atomica_bonds2_matrix = build_matrix(bonds2, atomica_atom_decoder)
+atomica_bonds3_matrix = build_matrix(bonds3, atomica_atom_decoder)
+# The 'lennard_jones_rm' matrix logic is not obvious, but it represents
+# inter-atomic distances. The single-bond-length matrix 'bonds1'
+# is a perfect, physically-sound substitute.
+atomica_lennard_jones_matrix = atomica_bonds1_matrix
+
+
 # Backbone geometry
 # Taken from: Bhagavan, N. V., and C. E. Ha.
 # "Chapter 4-Three-dimensional structure of proteins and disorders of protein misfolding."
@@ -93,6 +163,30 @@ N_CA_C_ANGLE = 110 * np.pi / 180
 # Dataset-specific constants
 # ------------------------------------------------------------------------------
 dataset_params = {}
+
+dataset_params['atomica_PL'] = {
+    'atom_encoder': atomica_atom_encoder,  # Use ATOMICA atom vocab
+    'atom_decoder': atomica_atom_decoder,  # Use ATOMICA atom vocab
+    'aa_encoder': atomica_block_encoder,   # Use ATOMICA block vocab
+    'aa_decoder': atomica_block_decoder,   # Use ATOMICA block vocab
+    
+
+    'colors_dic': ['#33ff33', '#3333ff', '#ff4d4d', '#e6c540', '#ffb5b5', 
+                   '#A62929', '#1FF01F', '#ff8000', '#940094', '#B3FFFF', 
+                   '#ffb5b5'], # Example, may need adjustment
+    'radius_dic': [0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3], 
+          # Bond matrices
+    'bonds1': atomica_bonds1_matrix,
+    'bonds2': atomica_bonds2_matrix,
+    'bonds3': atomica_bonds3_matrix,
+    'lennard_jones_rm': atomica_lennard_jones_matrix,
+
+      'atom_hist': {'C': 1570767, 'N': 273858, 'O': 396837, 'S': 26352, 'B': 0, 'Br': 0, 'Cl': 15058, 'P': 25994, 'I': 0, 'F': 30687, 'others': 0},
+      'aa_hist': {'C': 23302704, 'N': 6093090, 'O': 6701210, 'S': 276805, 'B': 0, 'Br': 0, 'Cl': 0, 'P': 0, 'I': 0, 'F': 0, 'others': 0},
+    
+    
+}
+
 dataset_params['bindingmoad'] = {
     'atom_encoder': {'C': 0, 'N': 1, 'O': 2, 'S': 3, 'B': 4, 'Br': 5, 'Cl': 6, 'P': 7, 'I': 8, 'F': 9},
     'atom_decoder': ['C', 'N', 'O', 'S', 'B', 'Br', 'Cl', 'P', 'I', 'F'],
@@ -171,6 +265,20 @@ dataset_params['crossdock'] = {
       'atom_decoder': ['C', 'N', 'O', 'S', 'B', 'Br', 'Cl', 'P', 'I', 'F'],
       'aa_encoder': {'A': 0, 'C': 1, 'D': 2, 'E': 3, 'F': 4, 'G': 5, 'H': 6, 'I': 7, 'K': 8, 'L': 9, 'M': 10, 'N': 11, 'P': 12, 'Q': 13, 'R': 14, 'S': 15, 'T': 16, 'V': 17, 'W': 18, 'Y': 19},
       'aa_decoder': ['A', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'K', 'L', 'M', 'N', 'P', 'Q', 'R', 'S', 'T', 'V', 'W', 'Y'],
+      # PyMOL colors, see: https://pymolwiki.org/index.php/Color_Values#Chemical_element_colours
+      'colors_dic': ['#33ff33', '#3333ff', '#ff4d4d', '#e6c540', '#ffb5b5', '#A62929', '#1FF01F', '#ff8000', '#940094', '#B3FFFF'],
+      'radius_dic': [0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3],
+      'bonds1': [[154.0, 147.0, 143.0, 182.0, 0.0, 194.0, 177.0, 184.0, 214.0, 135.0], [147.0, 145.0, 140.0, 168.0, 0.0, 214.0, 175.0, 177.0, 222.0, 136.0], [143.0, 140.0, 148.0, 151.0, 0.0, 172.0, 164.0, 163.0, 194.0, 142.0], [182.0, 168.0, 151.0, 204.0, 0.0, 225.0, 207.0, 210.0, 234.0, 158.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 175.0, 0.0, 0.0, 0.0], [194.0, 214.0, 172.0, 225.0, 0.0, 228.0, 214.0, 222.0, 0.0, 178.0], [177.0, 175.0, 164.0, 207.0, 175.0, 214.0, 199.0, 203.0, 0.0, 166.0], [184.0, 177.0, 163.0, 210.0, 0.0, 222.0, 203.0, 221.0, 0.0, 156.0], [214.0, 222.0, 194.0, 234.0, 0.0, 0.0, 0.0, 0.0, 266.0, 187.0], [135.0, 136.0, 142.0, 158.0, 0.0, 178.0, 166.0, 156.0, 187.0, 142.0]],
+      'bonds2': [[134.0, 129.0, 120.0, 160.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [129.0, 125.0, 121.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [120.0, 121.0, 121.0, 0.0, 0.0, 0.0, 0.0, 150.0, 0.0, 0.0], [160.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 186.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 150.0, 186.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]],
+      'bonds3': [[120.0, 116.0, 113.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [116.0, 110.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [113.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]],
+      'lennard_jones_rm': [[120.0, 116.0, 113.0, 160.0, 133.0, 194.0, 177.0, 184.0, 214.0, 135.0], [116.0, 110.0, 121.0, 168.0, 127.0, 214.0, 175.0, 177.0, 222.0, 136.0], [113.0, 121.0, 121.0, 151.0, 126.0, 172.0, 164.0, 150.0, 194.0, 142.0], [160.0, 168.0, 151.0, 204.0, 167.0, 225.0, 207.0, 186.0, 234.0, 158.0], [133.0, 127.0, 126.0, 167.0, 146.0, 182.0, 175.0, 167.0, 198.0, 126.0], [194.0, 214.0, 172.0, 225.0, 182.0, 228.0, 214.0, 222.0, 234.0, 178.0], [177.0, 175.0, 164.0, 207.0, 175.0, 214.0, 199.0, 203.0, 218.0, 166.0], [184.0, 177.0, 150.0, 186.0, 167.0, 222.0, 203.0, 221.0, 219.0, 156.0], [214.0, 222.0, 194.0, 234.0, 198.0, 234.0, 218.0, 219.0, 266.0, 187.0], [135.0, 136.0, 142.0, 158.0, 126.0, 178.0, 166.0, 156.0, 187.0, 142.0]],
+      'atom_hist': {'C': 1570032, 'N': 273792, 'O': 396623, 'S': 26339, 'B': 0, 'Br': 0, 'Cl': 15055, 'P': 25975, 'I': 0, 'F': 30673},
+      'aa_hist': {'A': 277175, 'C': 92406, 'D': 254046, 'E': 201833, 'F': 234995, 'G': 376966, 'H': 147704, 'I': 290683, 'K': 173210, 'L': 421883, 'M': 157813, 'N': 174241, 'P': 148581, 'Q': 120232, 'R': 173848, 'S': 274430, 'T': 247605, 'V': 326134, 'W': 88552, 'Y': 226668},
+}
+dataset_params['crossdock_atomica'] = {
+      'atom_encoder': {'C': 0, 'N': 1, 'O': 2, 'S': 3, 'B': 4, 'Br': 5, 'Cl': 6, 'P': 7, 'I': 8, 'F': 9},
+      'atom_decoder': ['C', 'N', 'O', 'S', 'B', 'Br', 'Cl', 'P', 'I', 'F'],
+      #residue encoders removed
       # PyMOL colors, see: https://pymolwiki.org/index.php/Color_Values#Chemical_element_colours
       'colors_dic': ['#33ff33', '#3333ff', '#ff4d4d', '#e6c540', '#ffb5b5', '#A62929', '#1FF01F', '#ff8000', '#940094', '#B3FFFF'],
       'radius_dic': [0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3],

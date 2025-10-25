@@ -62,6 +62,12 @@ if __name__ == "__main__":
 
     args = merge_args_and_yaml(args, config)
 
+    if 'atomica_model_path' not in args:
+        args.atomica_model_path = None
+    if 'atomica_embed_dim' not in args.egnn_params:
+        print("Warning: 'atomica_embed_dim' not in egnn_params. Defaulting to 128.")
+        args.egnn_params.atomica_embed_dim = 128
+
     out_dir = Path(args.logdir, args.run_name)
     histogram_file = Path(args.datadir, 'size_distribution.npy')
     histogram = np.load(histogram_file).tolist()
@@ -86,7 +92,8 @@ if __name__ == "__main__":
         mode=args.mode,
         node_histogram=histogram,
         pocket_representation=args.pocket_representation,
-        virtual_nodes=args.virtual_nodes
+        virtual_nodes=args.virtual_nodes,
+        atomica_model_path=args.atomica_model_path
     )
 
     logger = pl.loggers.WandbLogger(
