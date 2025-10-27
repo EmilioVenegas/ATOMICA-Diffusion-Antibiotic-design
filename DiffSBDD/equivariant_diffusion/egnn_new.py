@@ -531,7 +531,7 @@ class SE3CrossAttention(nn.Module):
         
         for i in range(0, n_layers):
             self.add_module(f"e_block_{i}", CrossEquivariantBlock(
-                hidden_nf_q=self.hidden_nf, hidden_nf_kv=self.hidden_f, 
+                hidden_nf_q=self.hidden_nf, hidden_nf_kv=self.hidden_nf,
                 edge_feat_nf=edge_feat_nf, device=device,
                 act_fn=act_fn, n_layers=inv_sublayers,
                 attention=attention, norm_diff=norm_diff, tanh=tanh,
