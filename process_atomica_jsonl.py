@@ -5,31 +5,38 @@ from pathlib import Path
 import torch
 import numpy as np
 from tqdm import tqdm
+import traceback
 
 # --- ATOMICA Imports ---
-
 from ATOMICA.models.prediction_model import PredictionModel
 from ATOMICA.models.pretrain_model import DenoisePretrainModel
 from ATOMICA.models.prot_interface_model import ProteinInterfaceModel
 
-
-def format_atomica_batch(pocket_coords, pocket_atom_types, pocket_block_types, device):
+#
+# --- TCORRECTED FUNCTION ---
+#
+def format_atomica_batch(pocket_coords, pocket_atom_types, pocket_B_types, pocket_block_lengths, pocket_segment_ids, device):
     """
     Formats the raw pocket data into the batch dictionary
     expected by the ATOMICA model's .infer() method.
     """
+    # Get the total number of atoms and blocks if used in the future
+    num_atoms = len(pocket_coords)
+    num_blocks = len(pocket_B_types)
     batch = {
         'X': torch.tensor(pocket_coords, dtype=torch.float32).to(device),
         'A': torch.tensor(pocket_atom_types, dtype=torch.long).to(device), # Atom types
-        'B': torch.tensor(pocket_block_types, dtype=torch.long).to(device), # Block types
-        'batch_id': torch.zeros(len(pocket_coords), dtype=torch.long).to(device)
+        'B': torch.tensor(pocket_B_types, dtype=torch.long).to(device), # Block types
+        'batch_id': torch.zeros(num_blocks, dtype=torch.long).to(device),
+        'block_lengths': torch.tensor(pocket_block_lengths, dtype=torch.long).to(device),
+        'lengths': torch.tensor([num_atoms], dtype=torch.long).to(device),
+        'segment_ids': torch.tensor(pocket_segment_ids, dtype=torch.long).to(device)
     }
     return batch
 
-
-def load_real_atomica_model(args):
+#-----function from get_embeddings.py -----
+def load_atomica_model(args):
     """
-    NEW FUNCTION:
     Loads the real ATOMICA model from checkpoint or config/weights,
     based on the logic from get_embeddings.py.
     """
@@ -38,13 +45,11 @@ def load_real_atomica_model(args):
         print(f"Loading model from checkpoint: {args.model_ckpt}")
         model = torch.load(args.model_ckpt)
         
-        # Handle model type-specific logic from get_embeddings.py
         if isinstance(model, ProteinInterfaceModel):
             print("Model is ProteinInterfaceModel, extracting prot_model.")
             model = model.prot_model
         if isinstance(model, DenoisePretrainModel) and not isinstance(model, PredictionModel):
             print("Model is DenoisePretrainModel, loading as PredictionModel from checkpoint.")
-            # This logic is directly from get_embeddings.py
             model = PredictionModel.load_from_pretrained(args.model_ckpt)
             
     elif args.model_config and args.model_weights:
@@ -52,9 +57,8 @@ def load_real_atomica_model(args):
         with open(args.model_config, "r") as f:
             model_config = json.load(f)
         
-        model_type = model_config.get('model_type', 'PredictionModel') # Default to PredictionModel
+        model_type = model_config.get('model_type', 'PredictionModel') 
         
-        # This logic is directly from get_embeddings.py
         if model_type == 'PredictionModel' or model_type == 'DenoisePretrainModel':
             model = PredictionModel.load_from_config_and_weights(args.model_config, args.model_weights)
         elif model_type == 'ProteinInterfaceModel':
@@ -76,41 +80,78 @@ def load_real_atomica_model(args):
 def process_complex(line, atomica_model, device, atom_vocab_size):
     """
     Processes a single line (complex) from the .jsonl file.
-    This version is corrected to handle the per-block data structure.
+    This version is corrected to handle the per-block data structure
+    and safely skip lines with missing data.
     """
     complex_data = json.loads(line)
+    complex_id = complex_data.get('id', 'Unknown')
     
-    # 1. Access the nested "data" object
+    # 1. Access nested "data" object 
     try:
-        data = complex_data['data']
-        x = np.array(data['X'])
-        a = np.array(data['A'])
-        b_blocks = np.array(data['B'])
-        block_lengths = np.array(data['block_lengths'])
-        seg_blocks = np.array(data['segment_ids'])
-    except KeyError as e:
-        print(f"Skipping complex {complex_data.get('id', 'Unknown')} due to missing key: {e}")
+        # Use .get() to safely access the 'data' object
+        data = complex_data.get('data')
+        if data is None:
+            # This line will print if the 'data' key is missing
+            print(f"Skipping complex {complex_id}: Top-level 'data' key is missing.")
+            return None
+
+        # Use .get() for all required keys. 
+        x_list = data.get('X')
+        a_list = data.get('A')
+        b_blocks_list = data.get('B')
+        block_lengths_list = data.get('block_lengths')
+        seg_blocks_list = data.get('segment_ids')
+
+        if any(v is None for v in [x_list, a_list, b_blocks_list, block_lengths_list, seg_blocks_list]):
+            # This line will print if 'block_lengths' or any other key is missing
+            print(f"Skipping complex {complex_id}: Missing one or more required data keys (X, A, B, block_lengths, or segment_ids).")
+            return None
+
+        # --- All keys exist,convert to numpy arrays ---
+        x = np.array(x_list)
+        a = np.array(a_list)
+        b_blocks = np.array(b_blocks_list)
+        block_lengths = np.array(block_lengths_list)
+        seg_blocks = np.array(seg_blocks_list)
+        
+        # --- Perform validations ---
+        if not (len(b_blocks) == len(block_lengths) == len(seg_blocks)):
+            print(f"Skipping complex {complex_id}: Block array lengths mismatch (B={len(b_blocks)}, len={len(block_lengths)}, seg={len(seg_blocks)}).")
+            return None
+        
+        # Check for empty complexes before sum()
+        if len(block_lengths) == 0:
+             print(f"Skipping complex {complex_id}: 'block_lengths' is empty.")
+             return None
+
+        if not (sum(block_lengths) == len(x) == len(a)):
+            print(f"Skipping complex {complex_id}: Atom array length mismatch (sum(block_lengths)={sum(block_lengths)}, len(x)={len(x)}, len(a)={len(a)}).")
+            return None
+
+    except Exception as e:
+        # This will catch any other unexpected errors (like bad data types)
+        print(f"Skipping complex {complex_id} due to parsing/validation error: {e}")
         return None
 
-    # Verify data integrity
-    if not (len(b_blocks) == len(block_lengths) == len(seg_blocks)):
-        print(f"Skipping complex {complex_data.get('id', 'Unknown')}: Block array lengths mismatch.")
-        return None
-    if not (sum(block_lengths) == len(x) == len(a)):
-        print(f"Skipping complex {complex_data.get('id', 'Unknown')}: Atom array length mismatch.")
-        return None
-
-    # 2. Reconstruct per-atom arrays from blocks
+    # Reconstruct per-atom arrays from blocks, as original dataset does not explicitly store pertenence of atoms, just blocks
     pocket_coords_list = []
     pocket_atom_types_list = []
-    pocket_block_types_list = []
+    
+    pocket_B_types_list = []
     ligand_coords_list = []
     ligand_atom_types_list = []
+    pocket_block_lengths_list = []
+
 
     
     atom_count = 0
     for i in range(len(seg_blocks)):
         length = block_lengths[i]
+        # Boundary check for safety
+        if atom_count + length > len(x):
+             print(f"Skipping complex {complex_id}: 'block_lengths' sum mismatch during reconstruction.")
+             return None
+             
         block_atoms_x = x[atom_count : atom_count + length]
         block_atoms_a = a[atom_count : atom_count + length]
         block_type_b = b_blocks[i]
@@ -118,8 +159,8 @@ def process_complex(line, atomica_model, device, atom_vocab_size):
         if seg_blocks[i] == 0:  # This is a Pocket block
             pocket_coords_list.append(block_atoms_x)
             pocket_atom_types_list.append(block_atoms_a)
-            # Create the per-atom block type array for ATOMICA
-            pocket_block_types_list.append(np.full(length, block_type_b))
+            pocket_B_types_list.append(block_type_b)
+            pocket_block_lengths_list.append(length) 
         
         elif seg_blocks[i] == 1:  # This is a Ligand block
             ligand_coords_list.append(block_atoms_x)
@@ -127,42 +168,42 @@ def process_complex(line, atomica_model, device, atom_vocab_size):
             
         atom_count += length
 
-    # 3. Concatenate lists into final numpy arrays
-    # Check for empty pocket or ligand
+    # Concatenate lists into final numpy arrays
     if not pocket_coords_list:
-        print(f"Warning: Complex {complex_data.get('id', 'Unknown')} has no pocket atoms. Skipping.")
+        print(f"Warning: Complex {complex_id} has no pocket atoms. Skipping.")
         return None
     if not ligand_coords_list:
-        print(f"Warning: Complex {complex_data.get('id', 'Unknown')} has no ligand atoms. Skipping.")
+        print(f"Warning: Complex {complex_id} has no ligand atoms. Skipping.")
         return None
 
-    # Create "Raw Pocket Graph" (Context)
+    # Create pocket arrays
     pocket_coords = np.concatenate(pocket_coords_list, axis=0)
     pocket_atom_types = np.concatenate(pocket_atom_types_list, axis=0)
-    pocket_block_types = np.concatenate(pocket_block_types_list, axis=0)
+    pocket_block_lengths = np.array(pocket_block_lengths_list)
+    pocket_B_types = np.array(pocket_B_types_list)
+    pocket_block_lengths = np.array(pocket_block_lengths_list)
+
+    num_pocket_blocks = len(pocket_block_lengths)
+    pocket_segment_ids = np.zeros(num_pocket_blocks, dtype=np.int64)
     
-    # Create "Target Ligand Graph" (Target)
+    # Create ligand arrays
     ligand_coords = np.concatenate(ligand_coords_list, axis=0)
     ligand_atom_types = np.concatenate(ligand_atom_types_list, axis=0)
 
-    # 4. Generate Embeddings (The "Upgrade")
-    # format_atomica_batch prepares the single-item batch for the real model
-    atomica_batch = format_atomica_batch(pocket_coords, pocket_atom_types, pocket_block_types, device)
+    # generate Embeddings
+    atomica_batch = format_atomica_batch(pocket_coords, pocket_atom_types, pocket_B_types, pocket_block_lengths, pocket_block_lengths, device)
     
     with torch.no_grad():
-        # This .infer() call is what the real model expects
         atomica_output = atomica_model.infer(atomica_batch)
     
-    # .unit_repr is the correct attribute for atom-level embeddings
     pocket_atomica_embeddings = atomica_output.unit_repr.cpu().numpy()
 
-    # 5. Save the New Data
-    # One-hot encode ligand features using the provided vocab size
+    # Save data, with error handling
     try:
         ligand_one_hot = np.eye(atom_vocab_size)[ligand_atom_types]
     except IndexError as e:
         print(f"ERROR: Atom index {np.max(ligand_atom_types)} is out of bounds for vocab size {atom_vocab_size}.")
-        print(f"Skipping complex {complex_data.get('id', 'Unknown')}. Please check --atom_vocab_size argument.")
+        print(f"Skipping complex {complex_id}. Please check --atom_vocab_size argument.")
         return None
 
     new_data = {
@@ -170,7 +211,7 @@ def process_complex(line, atomica_model, device, atom_vocab_size):
         'lig_one_hot': ligand_one_hot.astype(np.float32),
         'pocket_coords': pocket_coords.astype(np.float32),
         'pocket_atomica_embeddings': pocket_atomica_embeddings.astype(np.float32),
-        'name': complex_data.get('id', 'complex')
+        'name': complex_id
     }
     
     return new_data
@@ -183,10 +224,15 @@ def main(args):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    # Load the pre-trained ATOMICA model using the new function
+    
     print("Loading ATOMICA model...")
-    atomica_model = load_real_atomica_model(args).to(device).eval()
-    print("ATOMICA model loaded successfully.")
+    try:
+        atomica_model = load_atomica_model(args).to(device).eval()
+        print("ATOMICA model loaded successfully.")
+    except Exception as e:
+        print(f"FATAL: Failed to load ATOMICA model: {e}")
+        print("Please check your --model_ckpt or --model_config/--model_weights paths.")
+        return
 
     print(f"Starting processing of {input_file}...")
     print(f"Saving processed files to {output_dir}")
@@ -200,16 +246,22 @@ def main(args):
             
             try:
                 processed_data = process_complex(line, atomica_model, device, args.atom_vocab_size)
+            
             except Exception as e:
-                print(f"Unhandled error processing line: {e}. Skipping.")
+                # ---  DETAILED ERROR BLOCK ---
+                print("\n---!!! UNHANDLED ERROR ENCOUNTERED !!!---")
+                print(f"Exception Type: {type(e)}")
+                print(f"Exception Details: {e}")
+                print(f"Failed to process line: {line.strip()[:150]}...") 
+                print("--- STACK TRACE ---")
+                traceback.print_exc() 
+                print("------------------------------------------\n")
+                # -----
                 processed_data = None
-                
             if processed_data:
-                # Save as a .pt file
                 file_name = f"complex_{count:06d}.pt"
                 file_path = output_dir / file_name
                 
-                # Convert numpy arrays to tensors for saving
                 tensor_data = {k: torch.from_numpy(v) if isinstance(v, np.ndarray) else v 
                                for k, v in processed_data.items()}
                 
@@ -230,14 +282,13 @@ if __name__ == "__main__":
                         help='Path of the model .json config to load (if not using ckpt).')
     parser.add_argument('--model_weights', type=str, default=None, 
                         help='Path of the model .pt weights to load (if not using ckpt).')
-    parser.add_argument("--atom_vocab_size", type=int, default=19,
+    parser.add_argument("--atom_vocab_size", type=int, default=121,
                         help="Total number of atom types for one-hot encoding. "
-                             "Default=19 (to fit max index 18 from example).")
+                             "Default=121 (3 special + 118 elements).")
     
     args = parser.parse_args()
     
-    # Add validation for model args
-    if not args.model_ckpt and not (args.model_config and args.model_weights):
+    if not (args.model_ckpt or (args.model_config and args.model_weights)):
         parser.error("You must provide either --model_ckpt or both --model_config and --model_weights.")
         
     main(args)

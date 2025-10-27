@@ -62,15 +62,32 @@ if __name__ == "__main__":
 
     args = merge_args_and_yaml(args, config)
 
+    # --- Check for ATOMICA-related args ---
     if 'atomica_model_path' not in args:
         args.atomica_model_path = None
-    if 'atomica_embed_dim' not in args.egnn_params:
-        print("Warning: 'atomica_embed_dim' not in egnn_params. Defaulting to 128.")
-        args.egnn_params.atomica_embed_dim = 128
+    if 'atomica_model_config' not in args:
+        args.atomica_model_config = None
+    if 'atomica_model_weights' not in args:
+        args.atomica_model_weights = None
+        
+    if args.pocket_representation == 'atomica':
+        if 'atomica_embed_dim' not in args.egnn_params:
+            print("Warning: 'atomica_embed_dim' not in egnn_params. Defaulting to 128.")
+            args.egnn_params.atomica_embed_dim = 128
+    # --- END NEW ---
 
     out_dir = Path(args.logdir, args.run_name)
     histogram_file = Path(args.datadir, 'size_distribution.npy')
-    histogram = np.load(histogram_file).tolist()
+    if not histogram_file.exists():
+         # --- NEW: Fallback for atomica data ---
+         print(f"Warning: {histogram_file} not found.")
+         print("Using fallback histogram. Please generate a histogram "
+               "for your processed dataset.")
+         # Dummy histogram, replace this
+         histogram = [0.0] + [1.0 / 100] * 100 
+    else:
+        histogram = np.load(histogram_file).tolist()
+        
     pl_module = LigandPocketDDPM(
         outdir=out_dir,
         dataset=args.dataset,
@@ -93,7 +110,10 @@ if __name__ == "__main__":
         node_histogram=histogram,
         pocket_representation=args.pocket_representation,
         virtual_nodes=args.virtual_nodes,
-        atomica_model_path=args.atomica_model_path
+        # ---  Pass ATOMICA paths ---
+        atomica_model_path=args.atomica_model_path,
+        atomica_model_config=args.atomica_model_config,
+        atomica_model_weights=args.atomica_model_weights
     )
 
     logger = pl.loggers.WandbLogger(
