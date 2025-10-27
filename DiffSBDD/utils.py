@@ -1,5 +1,12 @@
 from typing import Union, Iterable
-
+import json
+from argparse import Namespace
+try:
+    from ATOMICA.models.prediction_model import PredictionModel
+    from ATOMICA.models.pretrain_model import DenoisePretrainModel
+    from ATOMICA.models.prot_interface_model import ProteinInterfaceModel
+except ImportError:
+    print("Warning (from utils.py): Could not import ATOMICA modules.")
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -232,3 +239,65 @@ class AppendVirtualNodes:
         data['num_virtual_atoms'] = n_virt
 
         return data
+
+
+def format_atomica_batch(pocket_coords, pocket_atom_types, pocket_B_types, pocket_block_lengths, pocket_segment_ids, device):
+    """
+    Formats the raw pocket data into the batch dictionary
+    expected by the ATOMICA model's .infer() method.
+    """
+    # Get the total number of atoms and blocks if used in the future
+    num_atoms = len(pocket_coords)
+    num_blocks = len(pocket_B_types)
+    batch = {
+        'X': torch.tensor(pocket_coords, dtype=torch.float32).to(device),
+        'A': torch.tensor(pocket_atom_types, dtype=torch.long).to(device), # Atom types
+        'B': torch.tensor(pocket_B_types, dtype=torch.long).to(device), # Block types
+        'batch_id': torch.zeros(num_blocks, dtype=torch.long).to(device),
+        'block_lengths': torch.tensor(pocket_block_lengths, dtype=torch.long).to(device),
+        'lengths': torch.tensor([num_atoms], dtype=torch.long).to(device),
+        'segment_ids': torch.tensor(pocket_segment_ids, dtype=torch.long).to(device)
+    }
+    return batch
+
+#-----function from get_embeddings.py -----
+def load_atomica_model(args):
+    """
+    Loads the real ATOMICA model from checkpoint or config/weights,
+    based on the logic from get_embeddings.py.
+    """
+    model = None
+    if args.model_ckpt:
+        print(f"Loading model from checkpoint: {args.model_ckpt}")
+        model = torch.load(args.model_ckpt)
+        
+        if isinstance(model, ProteinInterfaceModel):
+            print("Model is ProteinInterfaceModel, extracting prot_model.")
+            model = model.prot_model
+        if isinstance(model, DenoisePretrainModel) and not isinstance(model, PredictionModel):
+            print("Model is DenoisePretrainModel, loading as PredictionModel from checkpoint.")
+            model = PredictionModel.load_from_pretrained(args.model_ckpt)
+            
+    elif args.model_config and args.model_weights:
+        print(f"Loading model from config: {args.model_config} and weights: {args.model_weights}")
+        with open(args.model_config, "r") as f:
+            model_config = json.load(f)
+        
+        model_type = model_config.get('model_type', 'PredictionModel') 
+        
+        if model_type == 'PredictionModel' or model_type == 'DenoisePretrainModel':
+            model = PredictionModel.load_from_config_and_weights(args.model_config, args.model_weights)
+        elif model_type == 'ProteinInterfaceModel':
+            model = ProteinInterfaceModel.load_from_config_and_weights(args.model_config, args.model_weights)
+            print("Model is ProteinInterfaceModel, extracting prot_model.")
+            model = model.prot_model
+        else:
+            raise NotImplementedError(f"Model type {model_type} not implemented in loading logic.")
+            
+    else:
+        raise ValueError("You must provide either --model_ckpt or both --model_config and --model_weights.")
+
+    if model is None:
+        raise ValueError("Model could not be loaded. Check paths and arguments.")
+        
+    return model
