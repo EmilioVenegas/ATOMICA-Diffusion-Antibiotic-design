@@ -1,0 +1,42 @@
+run_name: 'SE3-cond-ATOMICA'
+logdir: '/path/to/your/logdir'
+wandb_params:
+  mode: 'online'  # disabled, offline, online
+  entity: 'my_username'
+
+# --- Core Model Parameters ---
+mode: 'pocket_conditioning'       # 'pocket_conditioning' or 'joint'
+pocket_representation: 'atomica'  # 'atomica', 'CA', or 'full-atom'
+dataset: 'atomica_PL'             # Must match entry in constants.py
+
+# --- Dataset Paths ---
+
+datadir: '/path/to/processed_atomica_dataset'
+
+# --- ATOMICA Model Paths (for Inference, Phase 4) ---
+# Provide EITHER ckpt OR (config + weights)
+atomica_model_path: '/path/to/atomica_model.ckpt'
+atomica_model_config: null # '/path/to/atomica_config.json'
+atomica_model_weights: null # '/path/to/atomica_weights.pt'
+
+# --- Training Hyperparameters ---
+batch_size: 32 # You may need to lower this due to larger model
+lr: 1.0e-4
+n_epochs: 1000
+num_workers: 4
+gpus: 4
+clip_grad: True
+augment_rotation: False
+augment_noise: 0
+enable_progress_bar: True
+num_sanity_val_steps: 0
+
+# --- Loss Parameters ---
+auxiliary_loss: False
+loss_params:
+  max_weight: 0.001
+  schedule: 'linear'
+  clamp_lj: 3.0
+
+# --- EGNN / Dynamics Parameters ---
+egnn_params:
