@@ -93,7 +93,7 @@ class ProcessedLigandPocketDataset(Dataset):
         out = {}
         for prop in batch[0].keys():
 
-            if prop == 'names' or prop == 'receptors':
+            if prop == 'names' or prop == 'receptors' or prop == 'name':
                 out[prop] = [x[prop] for x in batch]
             elif prop == 'num_lig_atoms' or prop == 'num_pocket_nodes' \
                     or prop == 'num_virtual_atoms':
