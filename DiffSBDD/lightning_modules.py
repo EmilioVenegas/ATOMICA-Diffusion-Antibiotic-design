@@ -13,7 +13,7 @@ import pytorch_lightning as pl
 import wandb
 from torch_scatter import scatter_add, scatter_mean
 from Bio.PDB import PDBParser
-from Bio.PDB.Polypeptide import three_to_one
+
 
 from constants import dataset_params, FLOAT_TYPE, INT_TYPE
 from equivariant_diffusion.dynamics import EGNNDynamics
@@ -30,6 +30,7 @@ from analysis.metrics import BasicMolecularMetrics, CategoricalDistribution, \
 from analysis.molecule_builder import build_molecule, process_molecule
 from analysis.docking import smina_score
 
+
 # --- NEW: Imports for Phase 4 (Inference) ---
 try:
     from ATOMICA.models.prediction_model import PredictionModel
@@ -37,7 +38,7 @@ try:
     from ATOMICA.models.prot_interface_model import ProteinInterfaceModel
     from ATOMICA.data.pdb_utils import VOCAB
     # --- NEW: Re-use data processing logic from Phase 1 ---
-    from process_atomica_jsonl import format_atomica_batch, load_real_atomica_model
+    from utils import format_atomica_batch, load_atomica_model
     ATOMICA_IMPORTS_OK = True
 except ImportError as e:
     print(f"Warning: Could not import ATOMICA modules: {e}. "
@@ -45,6 +46,14 @@ except ImportError as e:
           "Inference (Phase 4) via generate_ligands() will fail.")
     ATOMICA_IMPORTS_OK = False
 
+PROTEIN_LETTERS_3TO1 = {
+    "ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C",
+    "GLN": "Q", "GLU": "E", "GLY": "G", "HIS": "H", "ILE": "I",
+    "LEU": "L", "LYS": "K", "MET": "M", "PHE": "F", "PRO": "P",
+    "SER": "S", "THR": "T", "TRP": "W", "TYR": "Y", "VAL": "V",
+    "MSE": "M", "SEP": "S", "TPO": "T", "PTR": "Y", "CSO": "C", 
+    "SEC": "U", "PYL": "O", "UNK": "X",
+}
 
 class LigandPocketDDPM(pl.LightningModule):
     def __init__(
@@ -428,7 +437,7 @@ class LigandPocketDDPM(pl.LightningModule):
         atom_type_idx = atom_one_hot.argmax(1)
         
         # --- heck if indices are out of bounds
-        if atom_type_idx.max() >C= len(lennard_jones_radii) or atom_type_idx.min() < 0:
+        if atom_type_idx.max() >= len(lennard_jones_radii) or atom_type_idx.min() < 0:
              print(f"Warning: atom_type_idx max {atom_type_idx.max()} out of bounds for lj_rm (size {len(lennard_jones_radii)})")
              # Clamp indices to be safe
              atom_type_idx = torch.clamp(atom_type_idx, 0, len(lennard_jones_radii) - 1)
@@ -496,7 +505,7 @@ class LigandPocketDDPM(pl.LightningModule):
     def test_step(self, data, *args):
         self._shared_eval(data, 'test', *args)
 
-    def validation_epoch_end(self, validation_step_outputs):
+    def on_validation_epoch_end(self):
 
         # Perform validation on single GPU
         if not self.trainer.is_global_zero:
@@ -784,7 +793,7 @@ class LigandPocketDDPM(pl.LightningModule):
                                 "'atomica_model_config' and 'atomica_model_weights' "
                                 "in config for inference.")
                                 
-            self.atomica_model = load_real_atomica_model(atomica_args).to(self.device).eval()
+            self.atomica_model = load_atomica_model(atomica_args).to(self.device).eval()
             print("ATOMICA model loaded.")
 
     # --- : prepare_pocket for Phase 4 Inference ---
@@ -797,7 +806,7 @@ class LigandPocketDDPM(pl.LightningModule):
                     [res['CA'].get_coord() for res in biopython_residues]),
                     device=self.device, dtype=FLOAT_TYPE)
                 pocket_types = torch.tensor(
-                    [self.pocket_type_encoder[three_to_one(res.get_resname())]
+                    [self.pocket_type_encoder[PROTEIN_LETTERS_3TO1.get(res.get_resname().upper(), "X")]
                      for res in biopython_residues], device=self.device)
             else: # 'full-atom'
                 pocket_atoms = [a for res in biopython_residues
