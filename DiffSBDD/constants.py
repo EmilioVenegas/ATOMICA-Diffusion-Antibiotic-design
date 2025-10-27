@@ -40,6 +40,24 @@ ATOMS = [ # Periodic Table
 atomica_atom_decoder = ['p', 'm', 'g'] + ATOMS
 atomica_atom_encoder = {atom: i for i, atom in enumerate(atomica_atom_decoder)}
 
+# --- ATOMICA Block Definitions (from ATOMICA/data/pdb_utils.py) ---
+atomica_block_vocab = [
+    'ALA', 'ARG', 'ASN', 'ASP', 'CYS', 'GLN', 'GLU', 'GLY', 'HIS', 'ILE',
+    'LEU', 'LYS', 'MET', 'PHE', 'PRO', 'SER', 'THR', 'TRP', 'TYR', 'VAL',
+    'NAG', 'ADP', 'FAD', 'NAD', 'NDP', 'ATP', 'GTP', 'FMN', 'HEM', 'MAN',
+    'GLC', 'BGC', 'GDP', 'SAH', 'SAM', 'AMP', 'COA', 'ACT', 'NAP', 'GNP',
+    'HES', 'SO4', 'PO4', 'EDO', 'GOL', 'CL', 'MG', 'CA', 'MN', 'ZN',
+    'FE', 'FE2', 'NA', 'K', 'IOD', 'ACY', 'MES', 'NO3', 'PCA', 'NH4',
+    'EPE', 'MLI', 'DMS', 'CIT', 'BME', 'MPD', 'PGE', 'FUC', 'PEG', 'PG4',
+    'PLP', 'PLM', 'PCW', 'PMP', 'SF4', 'LIG', 'UNK'
+]
+atomica_block_encoder = {j: i for i, j in enumerate(atomica_block_vocab)}
+atomica_block_decoder = atomica_block_vocab
+
+# Placeholder histogram for atomica blocks
+atomica_aa_hist = np.ones(len(atomica_block_vocab))
+atomica_aa_hist = atomica_aa_hist / atomica_aa_hist.sum()
+
 
 
 #  Helper function to build new bond matrices
@@ -176,7 +194,8 @@ dataset_params['atomica_PL'] = {
     'lennard_jones_rm': atomica_lennard_jones_matrix,
 
       'atom_hist': {'C': 1570767, 'N': 273858, 'O': 396837, 'S': 26352, 'B': 0, 'Br': 0, 'Cl': 15058, 'P': 25994, 'I': 0, 'F': 30687, 'others': 0},
-      'aa_hist': {'C': 23302704, 'N': 6093090, 'O': 6701210, 'S': 276805, 'B': 0, 'Br': 0, 'Cl': 0, 'P': 0, 'I': 0, 'F': 0, 'others': 0},
+      'aa_hist': atomica_aa_hist,
+      
     
     
 }
