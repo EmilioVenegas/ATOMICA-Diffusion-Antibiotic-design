@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from equivariant_diffusion.egnn_new import EGNN, GNN
+from equivariant_diffusion.egnn_new import EGNN, GNN, SE3CrossAttention
 from equivariant_diffusion.en_diffusion import EnVariationalDiffusion
 remove_mean_batch = EnVariationalDiffusion.remove_mean_batch
 import numpy as np
@@ -197,7 +197,7 @@ class AtomicaDynamics(nn.Module):
                  edge_cutoff_ligand=None, edge_cutoff_interaction=None,
                  reflection_equivariant=True, edge_embedding_dim=None):
         super().__init__()
-        
+        self.update_pocket_coords = False
         self.edge_cutoff_l = edge_cutoff_ligand
         self.edge_cutoff_i = edge_cutoff_interaction
         self.edge_nf = edge_embedding_dim
