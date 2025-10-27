@@ -172,9 +172,13 @@ class ConditionalDDPM(EnVariationalDiffusion):
             device=lig_mask.device)
 
         # Sample z_t given x, h for timestep t, from q(z_t | x, h)
-        z_t_lig = alpha_t[lig_mask] * xh_lig + sigma_t[lig_mask] * eps_lig
-
-        # project to COM-free subspace
+        # --- DEBUG PRINTS ---
+        print(f"DEBUG: alpha_t[lig_mask] shape: {alpha_t[lig_mask].shape}")
+        print(f"DEBUG: xh_lig shape: {xh_lig.shape}")
+        print(f"DEBUG: sigma_t[lig_mask] shape: {sigma_t[lig_mask].shape}")
+        print(f"DEBUG: eps_lig shape: {eps_lig.shape}")
+        # --- END DEBUG ---
+        z_t_lig = alpha_t[lig_mask] * xh_lig + sigma_t[lig_mask] * eps_lig # Line 175
         xh_pocket = xh0_pocket.detach().clone()
         z_t_lig[:, :self.n_dims], xh_pocket[:, :self.n_dims] = \
             self.remove_mean_batch(z_t_lig[:, :self.n_dims],
