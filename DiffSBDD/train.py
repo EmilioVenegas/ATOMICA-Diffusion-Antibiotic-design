@@ -1,9 +1,14 @@
+import sys
+import os
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import argparse
 from argparse import Namespace
 from pathlib import Path
 import warnings
 
 import torch
+torch.set_float32_matmul_precision('medium')
 import pytorch_lightning as pl
 import yaml
 import numpy as np
@@ -45,6 +50,8 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument('--config', type=str, required=True)
     p.add_argument('--resume', type=str, default=None)
+    p.add_argument('--virtual_nodes', action='store_true',
+                   help='Use virtual nodes (default: False)')
     args = p.parse_args()
 
     with open(args.config, 'r') as f:
@@ -143,7 +150,7 @@ if __name__ == "__main__":
         enable_progress_bar=args.enable_progress_bar,
         num_sanity_val_steps=args.num_sanity_val_steps,
         accelerator='gpu', devices=args.gpus,
-        strategy=('ddp' if args.gpus > 1 else None)
+        strategy=args.strategy,
     )
 
     trainer.fit(model=pl_module, ckpt_path=ckpt_path)
