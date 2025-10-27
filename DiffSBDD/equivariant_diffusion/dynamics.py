@@ -302,6 +302,7 @@ class AtomicaDynamics(nn.Module):
         h_ll_final, x_ll_final = self.egnn(
             h_l_t, x_l, edges_ll,
             node_mask=mask_lig.unsqueeze(-1), 
+            batch_mask=mask_lig,
             edge_attr=edge_attr_ll
         )
         
