@@ -38,7 +38,7 @@ egnn_params:
   edge_cutoff_pocket: 5.0
   edge_cutoff_interaction: 5.0
   reflection_equivariant: False
-  atomica_embed_dim: 512
+  atomica_embed_dim: 32
   joint_nf: 128
   hidden_nf: 256
   n_layers: 6
