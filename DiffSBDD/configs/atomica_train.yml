@@ -4,7 +4,7 @@ wandb_params:
   mode: 'disabled'  # disabled, offline, online
   entity: 'my_username'
   group: 'atomica'
-dataset: 'crossdock'
+dataset: 'atomica_PL'
 datadir: 'data/processed_atomica'
 atomica_model_config: ATOMICA/pretrain/pretrain_model_config.json
 atomica_model_weights: ATOMICA/pretrain/pretrain_model_weights.pt
