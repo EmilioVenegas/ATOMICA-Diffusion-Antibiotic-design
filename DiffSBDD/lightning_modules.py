@@ -962,7 +962,7 @@ class LigandPocketDDPM(pl.LightningModule):
 
         return molecules
 
-    def configure_gradient_clipping(self, optimizer, optimizer_idx,
+    def configure_gradient_clipping(self, optimizer,
                                     gradient_clip_val, gradient_clip_algorithm):
 
         if not self.clip_grad:

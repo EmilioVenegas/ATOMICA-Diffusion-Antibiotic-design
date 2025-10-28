@@ -13,7 +13,7 @@ num_sanity_val_steps: 0
 
 mode: 'pocket_conditioning'  # joint, pocket_conditioning
 pocket_representation: atomica  # CA, full-atom
-batch_size: 96
+batch_size: 48
 lr: 1.0e-3
 noise_factor: 1.0
 n_epochs: 1000

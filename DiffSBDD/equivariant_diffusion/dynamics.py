@@ -321,8 +321,9 @@ class AtomicaDynamics(nn.Module):
         h_lp_final, x_lp_final = self.cross_attention(
             h_q=h_l_t, x_q=x_l, 
             h_kv=h_p_emb, x_kv=x_p, 
-            edge_index=edges_lp,
-            node_mask_q=mask_lig.unsqueeze(-1), 
+            edge_index=edges_lp, 
+            node_mask_q=mask_lig.unsqueeze(-1),
+            batch_mask=mask_lig,
             edge_attr=edge_attr_lp
         )
 

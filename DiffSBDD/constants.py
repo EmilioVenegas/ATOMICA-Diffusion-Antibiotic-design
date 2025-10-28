@@ -193,7 +193,7 @@ dataset_params['atomica_PL'] = {
     'bonds3': atomica_bonds3_matrix,
     'lennard_jones_rm': atomica_lennard_jones_matrix,
 
-      'atom_hist': {'C': 1570767, 'N': 273858, 'O': 396837, 'S': 26352, 'B': 0, 'Br': 0, 'Cl': 15058, 'P': 25994, 'I': 0, 'F': 30687, 'others': 0},
+      'atom_hist': {'C': 1570767, 'N': 273858, 'O': 396837, 'S': 26352, 'B': 0, 'Br': 0, 'Cl': 15058, 'P': 25994, 'I': 0, 'F': 30687},
       'aa_hist': atomica_aa_hist,
       
     
