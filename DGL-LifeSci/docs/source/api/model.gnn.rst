@@ -1,0 +1,80 @@
+.. _apimodelgnn:
+
+Graph Neural Networks for Updating Node/Edge Representations
+============================================================
+
+All models based on graph neural networks start with updating node/edge representations.
+We introduce various GNN models implemented in DGL-LifeSci for representation update.
+
+.. contents:: Contents
+    :local:
+
+AttentiveFP
+-----------
+.. automodule:: dgllife.model.gnn.attentivefp
+    :members:
+
+GAT
+---
+.. automodule:: dgllife.model.gnn.gat
+    :members:
+
+GATv2
+---
+.. automodule:: dgllife.model.gnn.gatv2
+    :members:
+
+GCN
+---
+.. automodule:: dgllife.model.gnn.gcn
+    :members:
+
+MGCN
+----
+.. automodule:: dgllife.model.gnn.mgcn
+    :members:
+
+MPNN
+----
+.. automodule:: dgllife.model.gnn.mpnn
+    :members:
+
+SchNet
+------
+.. automodule:: dgllife.model.gnn.schnet
+    :members:
+
+Weave
+-----
+.. automodule:: dgllife.model.gnn.weave
+    :members:
+
+GIN
+---
+.. automodule:: dgllife.model.gnn.gin
+    :members:
+
+GraphSAGE
+---------
+.. automodule:: dgllife.model.gnn.graphsage
+    :members:
+
+WLN
+---
+.. automodule:: dgllife.model.gnn.wln
+    :members:
+
+GNNOGB
+------
+.. automodule:: dgllife.model.gnn.gnn_ogb
+    :members:
+
+NF
+--
+.. automodule:: dgllife.model.gnn.nf
+    :members:
+
+PAGTN
+-----
+.. automodule:: dgllife.model.gnn.pagtn
+    :members:
