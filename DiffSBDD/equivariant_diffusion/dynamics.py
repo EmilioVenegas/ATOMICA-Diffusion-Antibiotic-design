@@ -307,7 +307,7 @@ class AtomicaDynamics(nn.Module):
         )
         
         vel_ll = (x_ll_final - x_l)
-        h_update_ll = (h_ll_final - h_l_t) if self.condition_time else (h_ll_final - h_l_emb)
+        h_update_lp = (h_lp_final[:, :-1] - h_l_t[:, :-1]) if self.condition_time else (h_lp_final - h_l_emb)
 
 
         # --- 3. L-P Path (Cross-Attention Interaction) ---

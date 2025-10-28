@@ -95,15 +95,16 @@ class EquivariantUpdate(nn.Module):
         self.aggregation_method = aggregation_method
 
     def coord_model(self, h, coord, edge_index, coord_diff, coord_cross,
-                    edge_attr, edge_mask, update_coords_mask=None):
+                    edge_attr, edge_mask, update_coords_mask=None, h_col_features=None):
         row, col = edge_index
-        input_tensor = torch.cat([h[row], h[col], edge_attr], dim=1)
+        h_col = h_col_features if h_col_features is not None else h
+        input_tensor = torch.cat([h[row], h_col[col], edge_attr], dim=1)
         if self.tanh:
             trans = coord_diff * torch.tanh(self.coord_mlp(input_tensor)) * self.coords_range
         else:
             trans = coord_diff * self.coord_mlp(input_tensor)
 
-        if not self.reflection_equiv:
+        if not self.reflection_equiv and coord_cross is not None:
             phi_cross = self.cross_product_mlp(input_tensor)
             if self.tanh:
                 phi_cross = torch.tanh(phi_cross) * self.coords_range
@@ -388,9 +389,18 @@ class CrossGCL(nn.Module):
     def node_model(self, h_q, edge_index, edge_attr, node_attr):
         row, col = edge_index # row: query nodes, col: kv nodes
         # Aggregate messages onto query nodes (row)
+        num_segments = h_q.size(0)
+        # --- DEBUG START ---
+        if row.numel() > 0:
+            if row.max() >= num_segments:
+                print(f"!!! ERROR in CrossGCL.node_model: row.max()={row.max()} >= num_segments={num_segments}")
+                # Optionally raise an error here to stop cleanly
+                # raise IndexError(f"Invalid index in row: max={row.max()}, num_segments={num_segments}")
+        # --- DEBUG END ---
         agg = unsorted_segment_sum(edge_attr, row, num_segments=h_q.size(0),
                                    normalization_factor=self.normalization_factor,
                                    aggregation_method=self.aggregation_method)
+        
         if node_attr is not None:
             agg = torch.cat([h_q, agg, node_attr], dim=1)
         else:
@@ -487,7 +497,8 @@ class CrossEquivariantBlock(nn.Module):
         x_q_new = self._modules["gcl_equiv"].coord_model(
             h_q, x_q, edge_index, coord_diff, coord_cross, 
             edge_attr=edge_attr, edge_mask=edge_mask, 
-            update_coords_mask=node_mask # Apply node_mask as update_coords_mask
+            update_coords_mask=node_mask, # Apply node_mask as update_coords_mask
+            h_col_features=h_kv
         )
 
         if node_mask is not None:
