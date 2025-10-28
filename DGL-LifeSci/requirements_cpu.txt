@@ -1,0 +1,43 @@
+# CPU-only requirements for DGL-LifeSci binding affinity prediction
+# Transfer learning on PDBBind dataset
+#
+# Install with: pip install -r requirements_cpu.txt
+# Note: PyTorch and DGL should be installed separately (see setup_env_cpu.sh)
+
+# Core scientific computing
+numpy>=1.14.0
+scipy>=1.1.0
+pandas>=1.1.0
+
+# Chemistry
+rdkit-pypi>=2022.3.5
+
+# Machine learning
+scikit-learn>=0.22.2
+
+# Deep learning utilities
+tqdm>=4.50.0
+
+# Configuration management
+pyyaml>=5.3
+
+# Visualization
+matplotlib>=3.3.0
+seaborn>=0.11.0
+
+# Model utilities
+hyperopt>=0.2.5
+joblib>=1.0.0
+
+# Network analysis
+networkx>=2.1
+
+# HTTP requests
+requests>=2.22.0
+
+# Jupyter notebook support (optional)
+jupyter>=1.0.0
+ipywidgets>=7.6.0
+
+# Additional utilities for molecular processing
+biopython>=1.78
