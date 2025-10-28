@@ -167,16 +167,31 @@ class ConditionalDDPM(EnVariationalDiffusion):
         sigma_t = self.sigma(gamma_t, xh_lig)
 
         # Sample zt ~ Normal(alpha_t x, sigma_t)
-        eps_lig = self.sample_gaussian(
-            size=(len(lig_mask), self.n_dims + self.atom_nf),
+        # 1. Sample standard Gaussian noise for x and h separately
+        eps_lig_x_uncen = self.sample_gaussian(
+            size=(len(lig_mask), self.n_dims),
             device=lig_mask.device)
+        eps_lig_h = self.sample_gaussian(
+            size=(len(lig_mask), self.atom_nf),
+            device=lig_mask.device)
+
+        # 2. Center the x-component of the noise using the specific
+        #    ligand-centering logic of ConditionalDDPM.
+        # We pass a dummy pocket tensor which will be translated and discarded.
+        dummy_pocket_x = torch.zeros_like(xh0_pocket[:, :self.n_dims])
+        eps_lig_x, _ = self.remove_mean_batch(
+            eps_lig_x_uncen, dummy_pocket_x, lig_mask, pocket_mask
+        )
+        
+        # 3. Combine the centered x-noise and standard h-noise
+        eps_lig = torch.cat([eps_lig_x, eps_lig_h], dim=1)
 
         # Sample z_t given x, h for timestep t, from q(z_t | x, h)
         # --- DEBUG PRINTS ---
-        print(f"DEBUG: alpha_t[lig_mask] shape: {alpha_t[lig_mask].shape}")
-        print(f"DEBUG: xh_lig shape: {xh_lig.shape}")
-        print(f"DEBUG: sigma_t[lig_mask] shape: {sigma_t[lig_mask].shape}")
-        print(f"DEBUG: eps_lig shape: {eps_lig.shape}")
+        #print(f"DEBUG: alpha_t[lig_mask] shape: {alpha_t[lig_mask].shape}")
+        #print(f"DEBUG: xh_lig shape: {xh_lig.shape}")
+        #print(f"DEBUG: sigma_t[lig_mask] shape: {sigma_t[lig_mask].shape}")
+        #print(f"DEBUG: eps_lig shape: {eps_lig.shape}")
         # --- END DEBUG ---
         z_t_lig = alpha_t[lig_mask] * xh_lig + sigma_t[lig_mask] * eps_lig # Line 175
         xh_pocket = xh0_pocket.detach().clone()
