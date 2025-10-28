@@ -114,11 +114,7 @@ class LigandPocketDDPM(pl.LightningModule):
         self.dataset_info = dataset_params[dataset]
         self.T = diffusion_params.diffusion_steps
         self.clip_grad = clip_grad
-        if clip_grad:
-            self.gradnorm_queue = utils.Queue()
-            # Add large value that will be flushed.
-            self.gradnorm_queue.add(3000)
-
+    
         self.lig_type_encoder = self.dataset_info['atom_encoder']
         self.lig_type_decoder = self.dataset_info['atom_decoder']
         
@@ -426,8 +422,10 @@ class LigandPocketDDPM(pl.LightningModule):
         edges = torch.where(adj)
 
         # Compute pair-wise potentials
-        r = torch.sum((atom_x[edges[0]] - atom_x[edges[1]])**2, dim=1).sqrt()
-
+        dist = torch.sum((atom_x[edges[0]] - atom_x[edges[1]])**2, dim=1)
+        # Add a small epsilon to the squared distance to prevent division by zero
+        r = torch.sqrt(dist + 1e-6)
+        
         # Get optimal radii
         lennard_jones_radii = torch.tensor(self.lj_rm, device=r.device)
         # unit conversion pm -> A
@@ -462,10 +460,15 @@ class LigandPocketDDPM(pl.LightningModule):
 
     def training_step(self, data, *args):
         if self.augment_noise > 0:
-            raise NotImplementedError
-            # Add noise eps ~ N(0, augment_noise) around points.
-            eps = sample_center_gravity_zero_gaussian(x.size(), x.device)
-            x = x + eps * args.augment_noise
+            # This prevents division-by-zero in the EGNN
+            # Use a small value for augment_noise, e.g., 1e-6
+            noise = self.augment_noise * torch.randn_like(data['lig_coords'])
+            data['lig_coords'] = data['lig_coords'] + noise
+
+            # Also jitter pocket atoms if they are part of the input
+            if 'pocket_coords' in data:
+                p_noise = self.augment_noise * torch.randn_like(data['pocket_coords'])
+                data['pocket_coords'] = data['pocket_coords'] + p_noise
 
         if self.augment_rotation:
             raise NotImplementedError
@@ -489,6 +492,13 @@ class LigandPocketDDPM(pl.LightningModule):
         return info
 
     def _shared_eval(self, data, prefix, *args):
+        jitter_val = 1e-6 
+        if 'lig_coords' in data:
+            noise = jitter_val * torch.randn_like(data['lig_coords'])
+            data['lig_coords'] = data['lig_coords'] + noise
+        if 'pocket_coords' in data:
+            p_noise = jitter_val * torch.randn_like(data['pocket_coords'])
+            data['pocket_coords'] = data['pocket_coords'] + p_noise
         nll, info = self.forward(data)
         loss = nll.mean(0)
 
@@ -962,32 +972,7 @@ class LigandPocketDDPM(pl.LightningModule):
 
         return molecules
 
-    def configure_gradient_clipping(self, optimizer,
-                                    gradient_clip_val, gradient_clip_algorithm):
 
-        if not self.clip_grad:
-            return
-
-        # Allow gradient norm to be 150% + 2 * stdev of the recent history.
-        max_grad_norm = 1.5 * self.gradnorm_queue.mean() + \
-                        2 * self.gradnorm_queue.std()
-
-        # Get current grad_norm
-        params = [p for g in optimizer.param_groups for p in g['params']]
-        grad_norm = utils.get_grad_norm(params)
-
-        # Lightning will handle the gradient clipping
-        self.clip_gradients(optimizer, gradient_clip_val=max_grad_norm,
-                            gradient_clip_algorithm='norm')
-
-        if float(grad_norm) > max_grad_norm:
-            self.gradnorm_queue.add(float(max_grad_norm))
-        else:
-            self.gradnorm_queue.add(float(grad_norm))
-
-        if float(grad_norm) > max_grad_norm:
-            print(f'Clipped gradient with value {grad_norm:.1f} '
-                  f'while allowed {max_grad_norm:.1f}')
 
 
 class WeightSchedule:

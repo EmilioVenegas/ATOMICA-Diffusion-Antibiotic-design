@@ -151,6 +151,8 @@ if __name__ == "__main__":
         num_sanity_val_steps=args.num_sanity_val_steps,
         accelerator='gpu', devices=args.gpus,
         strategy=args.strategy,
+        gradient_clip_val=1.0,
+        gradient_clip_algorithm='norm'
     )
 
     trainer.fit(model=pl_module, ckpt_path=ckpt_path)

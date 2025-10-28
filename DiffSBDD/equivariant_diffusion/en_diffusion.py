@@ -1025,33 +1025,63 @@ class DistributionNodes(object):
             n_nodes = torch.stack((n1.to(n2.device), n2), dim=1)
         return n_nodes
 
+
     def log_prob(self, batch_n_nodes_1, batch_n_nodes_2):
         assert len(batch_n_nodes_1.size()) == 1
         assert len(batch_n_nodes_2.size()) == 1
 
-        idx = torch.tensor(
-            [self.n_nodes_to_idx[(n1, n2)]
-             for n1, n2 in zip(batch_n_nodes_1.tolist(), batch_n_nodes_2.tolist())]
-        )
+        if not self.is_2d:
+            # 1D case: use n1 (ligand nodes) only
+            try:
+                idx = torch.tensor(
+                    [self.n_nodes_to_idx[(n1,)]
+                     for n1 in batch_n_nodes_1.tolist()], device=batch_n_nodes_1.device
+                )
+            except KeyError as e:
+                print(f"Error: Node count {e} not in 1D n_nodes_to_idx histogram (log_prob).")
+                raise e
+        else:
+            # 2D case
+            try:
+                idx = torch.tensor(
+                    [self.n_nodes_to_idx[(n1, n2)]
+                     for n1, n2 in zip(batch_n_nodes_1.tolist(), batch_n_nodes_2.tolist())],
+                    device=batch_n_nodes_1.device
+                )
+            except KeyError as e:
+                print(f"Error: Node counts {(e,)} not in 2D n_nodes_to_idx histogram (log_prob).")
+                raise e
 
-        # log_probs = torch.log(self.prob.view(-1)[idx] + 1e-30)
-        log_probs = self.m.log_prob(idx)
+        log_probs = self.m.log_prob(idx.to(self.m.logits.device))
 
         return log_probs.to(batch_n_nodes_1.device)
 
     def log_prob_n1_given_n2(self, n1, n2):
         assert len(n1.size()) == 1
         assert len(n2.size()) == 1
-        log_probs = torch.stack([self.n1_given_n2[c].log_prob(i.cpu())
-                                 for i, c in zip(n1, n2)])
-        return log_probs.to(n1.device)
 
-    def log_prob_n2_given_n1(self, n2, n1):
-        assert len(n2.size()) == 1
-        assert len(n1.size()) == 1
-        log_probs = torch.stack([self.n2_given_n1[c].log_prob(i.cpu())
-                                 for i, c in zip(n2, n1)])
-        return log_probs.to(n2.device)
+        if not self.is_2d:
+            # 1D case: p(n1 | n2) = p(n1). We ignore n2.
+            # We need to get the indices from the n1 counts.
+            try:
+                idx = torch.tensor(
+                    [self.n_nodes_to_idx[(c,)]
+                     for c in n1.tolist()], device=n1.device
+                )
+            except KeyError as e:
+                print(f"Error: Node count {e} not in 1D n_nodes_to_idx histogram (log_prob_n1_given_n2).")
+                raise e
+            log_probs = self.m.log_prob(idx.to(self.m.logits.device))
+        else:
+            # Original 2D logic
+            if n2.max() >= len(self.n1_given_n2) or n2.min() < 0:
+                 raise IndexError(f"Error: n2 (pocket node count) value out of range. "
+                                  f"Max n2: {n2.max()}, min n2: {n2.min()}, "
+                                  f"size of n1_given_n2: {len(self.n1_given_n2)}")
+            log_probs = torch.stack([self.n1_given_n2[c].log_prob(i.cpu())
+                                     for i, c in zip(n1, n2)])
+        
+        return log_probs.to(n1.device)
 
 
 class PositiveLinear(torch.nn.Module):

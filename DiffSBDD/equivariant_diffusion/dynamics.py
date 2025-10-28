@@ -244,8 +244,8 @@ class AtomicaDynamics(nn.Module):
         self.egnn = EGNN(
             in_node_nf=dynamics_node_nf, in_edge_nf=self.edge_nf,
             hidden_nf=hidden_nf, device=device, act_fn=act_fn,
-            n_layers=n_layers, attention=attention, tanh=tanh,
-            norm_constant=norm_constant,
+            n_layers=n_layers, attention=attention, tanh=True,
+            norm_constant=1e-8,
             inv_sublayers=inv_sublayers, sin_embedding=sin_embedding,
             normalization_factor=normalization_factor,
             aggregation_method=aggregation_method,
@@ -257,8 +257,8 @@ class AtomicaDynamics(nn.Module):
             in_node_nf_q=dynamics_node_nf, in_node_nf_kv=hidden_nf, # KV (pocket) is not time-conditioned
             in_edge_nf=self.edge_nf,
             hidden_nf=hidden_nf, device=device, act_fn=act_fn,
-            n_layers=n_layers, attention=attention, tanh=tanh,
-            norm_constant=norm_constant,
+            n_layers=n_layers, attention=attention, tanh=True,
+            norm_constant=1e-8,
             inv_sublayers=inv_sublayers, sin_embedding=sin_embedding,
             normalization_factor=normalization_factor,
             aggregation_method=aggregation_method,
@@ -273,6 +273,23 @@ class AtomicaDynamics(nn.Module):
         h_l = xh_lig[:, self.n_dims:].clone()
 
         x_p = xh_context[:, :self.n_dims].clone()
+        # --- DEBUGGING: Check for overlapping coords ---
+        # Check for L-L overlap
+        ll_dists = torch.cdist(x_l, x_l)
+        # We add 1e-5 to the diagonal to ignore self-distances
+        min_ll_dist = (ll_dists + torch.diag(torch.full((x_l.shape[0],), 1e-5, device=x_l.device))).min()
+        if min_ll_dist < 1e-6:
+             print(f"Warning: Minimum L-L distance is very small: {min_ll_dist.item()}")
+
+        # Check for L-P overlap
+        if x_p.shape[0] > 0:
+            lp_dists = torch.cdist(x_l, x_p)
+            min_lp_dist = lp_dists.min()
+            if min_lp_dist < 1e-6:
+                 print(f"Warning: Minimum L-P distance is very small: {min_lp_dist.item()}")
+        # --- END DEBUGGING ---
+
+
         h_p_atomica = xh_context[:, self.n_dims:].clone() # These are the ATOMICA embeddings
 
         # Embed features
@@ -307,8 +324,9 @@ class AtomicaDynamics(nn.Module):
         )
         
         vel_ll = (x_ll_final - x_l)
-        h_update_lp = (h_lp_final[:, :-1] - h_l_t[:, :-1]) if self.condition_time else (h_lp_final - h_l_emb)
-
+        if not torch.all(torch.isfinite(vel_ll)):
+            print("!!! NaN or Inf detected in vel_ll (L-L EGNN) !!!")
+        h_update_ll = (h_ll_final[:, :-1] - h_l_t[:, :-1]) if self.condition_time else (h_ll_final - h_l_emb)
 
         # --- 3. L-P Path (Cross-Attention Interaction) ---
         edges_lp = self.get_cross_edges(mask_lig, mask_context, x_l, x_p)
@@ -328,28 +346,37 @@ class AtomicaDynamics(nn.Module):
         )
 
         vel_lp = (x_lp_final - x_l)
-        h_update_lp = (h_lp_final - h_l_t) if self.condition_time else (h_lp_final - h_l_emb)
+        if not torch.all(torch.isfinite(vel_lp)):
+            print("!!! NaN or Inf detected in vel_lp (L-P CrossAttention) !!!")
+        h_update_lp = (h_lp_final[:, :-1] - h_l_t[:, :-1]) if self.condition_time else (h_lp_final - h_l_emb)
 
         # --- 4. Combine Updates ---
-        final_velocity = vel_ll + vel_lp
+        final_velocity = (vel_ll + vel_lp) / 2.0
+        # Average the two output feature states for stability
+        if self.condition_time:
+            # Average the states and remove the time dimension
+            h_final_emb = (h_ll_final[:, :-1] + h_lp_final[:, :-1]) / 2.0
+        else:
+            # Average the states
+            h_final_emb = (h_ll_final + h_lp_final) / 2.0
         
-        # Combine feature updates
-        h_final_emb = h_l_emb + h_update_ll + h_update_lp
-        
+                
         # Decode features back to original atom_nf
         final_features = self.atom_decoder(h_final_emb)
 
-        if torch.any(torch.isnan(final_velocity)):
+        if not torch.all(torch.isfinite(final_velocity)):
             if self.training:
-                final_velocity[torch.isnan(final_velocity)] = 0.0
+                print("Warning: NaN or Inf detected in AtomicaDynamics output velocity. Clamping to 0.")
+                final_velocity = torch.nan_to_num(final_velocity, nan=0.0, posinf=0.0, neginf=0.0)
             else:
-                raise ValueError("NaN detected in AtomicaDynamics output velocity")
-        if torch.any(torch.isnan(final_features)):
-             if self.training:
-                final_features[torch.isnan(final_features)] = 0.0
-             else:
-                raise ValueError("NaN detected in AtomicaDynamics output features")
+                raise ValueError("NaN or Inf detected in AtomicaDynamics output velocity")
 
+        if not torch.all(torch.isfinite(final_features)):
+             if self.training:
+                print("Warning: NaN or Inf detected in AtomicaDynamics output features. Clamping to 0.")
+                final_features = torch.nan_to_num(final_features, nan=0.0, posinf=0.0, neginf=0.0)
+             else:
+                raise ValueError("NaN or Inf detected in AtomicaDynamics output features")
         # Context (pocket) is fixed, so its "update" is all zeros.
         # This matches the EGNNDynamics return signature.
         ligand_update = torch.cat([final_velocity, final_features], dim=-1)
