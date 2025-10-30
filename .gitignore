@@ -1,3 +1,6 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
 
+outputs_embedded.pt/
+data/
+PL.jsonl.gz
