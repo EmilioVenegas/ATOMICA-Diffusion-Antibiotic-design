@@ -18,6 +18,8 @@ import numpy as np
 # --- Configuration (kept for analysis path) ---
 FILE_NAME = '/Users/shawnkang/ATOMICA/PL.jsonl.gz'
 
+
+#HELLO THIS IS AN EDIT 
 def choose_device():
     import torch
     # Prefer CUDA if you ever move to an NVIDIA box
