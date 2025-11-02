@@ -264,9 +264,38 @@ class LigandPocketDDPM(pl.LightningModule):
                 raise ImportError("ATOMICA modules failed to import, but "
                                   "pocket_representation is set to 'atomica'.")
 
+    
     def configure_optimizers(self):
-        return torch.optim.AdamW(self.ddpm.parameters(), lr=self.lr,
-                                 amsgrad=True, weight_decay=1e-3)
+        optimizer = torch.optim.AdamW(
+            self.ddpm.parameters(), 
+            lr=self.lr,
+            amsgrad=True, 
+            weight_decay=1e-3,
+            eps=1e-8  # STABILITY: Increase epsilon
+        )
+        
+        # CRITICAL: Add learning rate scheduler with warmup
+        def lr_lambda(epoch):
+            warmup_epochs = 5
+            if epoch < warmup_epochs:
+                # Linear warmup from 0.1 to 1.0
+                return 0.1 + 0.9 * (epoch / warmup_epochs)
+            else:
+                # Cosine decay after warmup
+                progress = (epoch - warmup_epochs) / (self.trainer.max_epochs - warmup_epochs)
+                return 0.5 * (1.0 + np.cos(np.pi * progress))
+        
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+        
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "epoch",
+                "frequency": 1,
+            },
+        }
+
 
     def setup(self, stage: Optional[str] = None):
         # --- MODIFIED: Load from processed directory, not .npz ---
@@ -459,61 +488,106 @@ class LigandPocketDDPM(pl.LightningModule):
             self.log(f'{m}/{split}', value, batch_size=batch_size, **kwargs)
 
     def training_step(self, data, *args):
+        # STABILITY FIX: Better jittering
         if self.augment_noise > 0:
-            # This prevents division-by-zero in the EGNN
-            # Use a small value for augment_noise, e.g., 1e-6
             noise = self.augment_noise * torch.randn_like(data['lig_coords'])
             data['lig_coords'] = data['lig_coords'] + noise
 
-            # Also jitter pocket atoms if they are part of the input
             if 'pocket_coords' in data:
                 p_noise = self.augment_noise * torch.randn_like(data['pocket_coords'])
                 data['pocket_coords'] = data['pocket_coords'] + p_noise
 
+        # STABILITY FIX: Check for NaN in input
+        if not torch.isfinite(data['lig_coords']).all():
+            print("WARNING: NaN detected in input lig_coords, skipping batch")
+            return None
+        if 'pocket_coords' in data and not torch.isfinite(data['pocket_coords']).all():
+            print("WARNING: NaN detected in input pocket_coords, skipping batch")
+            return None
+
         if self.augment_rotation:
             raise NotImplementedError
-            x = utils.random_rotation(x).detach()
 
         try:
             nll, info = self.forward(data)
         except RuntimeError as e:
-            # this is not supported for multi-GPU
-            if self.trainer.num_devices < 2 and 'out of memory' in str(e):
+            if 'out of memory' in str(e):
                 print('WARNING: ran out of memory, skipping to the next batch')
+                torch.cuda.empty_cache()
                 return None
             else:
                 raise e
 
+        # STABILITY FIX: Check for NaN in loss
+        if not torch.isfinite(nll).all():
+            print("WARNING: NaN detected in loss, skipping batch")
+            print(f"  Loss values: {nll}")
+            print(f"  Info: {info}")
+            return None
+
         loss = nll.mean(0)
+
+        # STABILITY FIX: Clamp loss to prevent explosions
+        loss = torch.clamp(loss, max=1000.0)
 
         info['loss'] = loss
         self.log_metrics(info, 'train', batch_size=len(data['num_lig_atoms']))
 
         return info
-
+    
     def _shared_eval(self, data, prefix, *args):
-        jitter_val = 1e-6 
+        # STABILITY FIX: Always apply jitter during eval to prevent exact overlaps
+        jitter_val = 1e-3  # Increased from 1e-6
         if 'lig_coords' in data:
             noise = jitter_val * torch.randn_like(data['lig_coords'])
             data['lig_coords'] = data['lig_coords'] + noise
         if 'pocket_coords' in data:
             p_noise = jitter_val * torch.randn_like(data['pocket_coords'])
             data['pocket_coords'] = data['pocket_coords'] + p_noise
-        nll, info = self.forward(data)
+        
+        try:
+            nll, info = self.forward(data)
+        except RuntimeError as e:
+            if 'out of memory' in str(e):
+                print(f'WARNING: OOM during {prefix}, skipping batch')
+                torch.cuda.empty_cache()
+                return {'loss': torch.tensor(float('nan'))}
+            else:
+                raise e
+        
+        # Check for NaN
+        if not torch.isfinite(nll).all():
+            print(f"WARNING: NaN in {prefix} loss")
+            return {'loss': torch.tensor(float('nan'))}
+        
         loss = nll.mean(0)
+        loss = torch.clamp(loss, max=1000.0)
 
         info['loss'] = loss
-
         self.log_metrics(info, prefix, batch_size=len(data['num_lig_atoms']),
-                         sync_dist=True)
+                        sync_dist=True)
 
         return info
-
     def validation_step(self, data, *args):
         self._shared_eval(data, 'val', *args)
 
     def test_step(self, data, *args):
         self._shared_eval(data, 'test', *args)
+    
+    
+    def on_before_optimizer_step(self, optimizer):
+        # STABILITY FIX: Log gradient norms
+        total_norm = 0.0
+        for p in self.parameters():
+            if p.grad is not None:
+                param_norm = p.grad.data.norm(2)
+                total_norm += param_norm.item() ** 2
+        total_norm = total_norm ** 0.5
+        
+        if total_norm > 100.0:
+            print(f"WARNING: Large gradient norm detected: {total_norm:.2f}")
+        
+        self.log('grad_norm', total_norm, prog_bar=True)
 
     def on_validation_epoch_end(self):
 

@@ -4,6 +4,7 @@ import torch
 import math
 
 
+
 class GCL(nn.Module):
     def __init__(self, input_nf, output_nf, hidden_nf, normalization_factor, aggregation_method,
                  edges_in_d=0, nodes_att_dim=0, act_fn=nn.SiLU(), attention=False):
@@ -295,12 +296,14 @@ class SinusoidsEmbeddingNew(nn.Module):
         return emb.detach()
 
 
-def coord2diff(x, edge_index, norm_constant=1):
+def coord2diff(x, edge_index, norm_constant=1.0):
     row, col = edge_index
     coord_diff = x[row] - x[col]
     radial = torch.sum((coord_diff) ** 2, 1).unsqueeze(1)
-    norm = torch.sqrt(radial + 1e-8)
-    coord_diff = coord_diff/(norm + norm_constant)
+    norm = torch.sqrt(radial + 1e-6)
+    # Use at least 1.0 for stability
+    effective_constant = max(norm_constant, 1.0)
+    coord_diff = coord_diff/(norm + effective_constant)
     return radial, coord_diff
 
 

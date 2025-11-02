@@ -1,4 +1,4 @@
-run_name: 'SE3-cond-CA-bs16-stablev4'
+run_name: 'SE3-cond-CA-bs16-stable-aggressive'
 logdir: './my_logs'
 wandb_params:
   mode: 'disabled'  # disabled, offline, online
@@ -13,8 +13,8 @@ num_sanity_val_steps: 0
 
 mode: 'pocket_conditioning'  # joint, pocket_conditioning
 pocket_representation: atomica  # CA, full-atom
-batch_size: 4
-lr: 1.0e-4
+batch_size: 2
+lr: 1.0e-5
 noise_factor: 1.0
 n_epochs: 1000
 num_workers: 8
@@ -22,8 +22,9 @@ gpus: 1
 strategy: auto
 clip_grad: True
 augment_rotation: False
-augment_noise: 0
-accumulate_grad_batches: 1
+augment_noise: 1.0e-3
+accumulate_grad_batches: 8
+gradient_clip_val: 1.0
 
 auxiliary_loss: False
 loss_params:
@@ -35,20 +36,21 @@ egnn_params:
   context_nf: 512
   device: 'cuda'
   edge_cutoff_ligand: null
-  edge_cutoff_pocket: 0.5
-  edge_cutoff_interaction: 0.5
+  edge_cutoff_pocket: 5.0
+  edge_cutoff_interaction: 5.0
   reflection_equivariant: True
   atomica_embed_dim: 32
-  joint_nf: 128
-  hidden_nf: 256
-  n_layers: 6
+  joint_nf: 64
+  hidden_nf: 128
+  n_layers: 4
   attention: True
   tanh: True  
-  norm_constant: 1.0e-3
+  norm_constant: 1
   inv_sublayers: 1
   sin_embedding: False
   aggregation_method: 'sum'
-  normalization_factor: 1 #1  # used if aggregation_method='sum'
+  normalization_factor: 100 #1  # used if aggregation_method='sum'
+  edge_embedding_dim: 32
 
 diffusion_params:
   diffusion_steps: 500
@@ -62,7 +64,7 @@ visualize_sample_epoch: 50
 visualize_chain_epoch: 50
 eval_params:
   n_eval_samples: 100
-  eval_batch_size: 8
+  eval_batch_size: 4
   smiles_file: null
   n_visualize_samples: 5
   keep_frames: 100
