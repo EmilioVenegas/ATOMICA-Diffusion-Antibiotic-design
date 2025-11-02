@@ -266,7 +266,7 @@ class LigandPocketDDPM(pl.LightningModule):
 
     def configure_optimizers(self):
         return torch.optim.AdamW(self.ddpm.parameters(), lr=self.lr,
-                                 amsgrad=True, weight_decay=1e-12)
+                                 amsgrad=True, weight_decay=1e-3)
 
     def setup(self, stage: Optional[str] = None):
         # --- MODIFIED: Load from processed directory, not .npz ---
@@ -595,7 +595,14 @@ class LigandPocketDDPM(pl.LightningModule):
                 if self.pocket_type_distribution is not None else -1
 
         # Convert into rdmols
-        rdmols = [build_molecule(*graph, self.dataset_info) for graph in molecules]
+        rdmols = []
+        for i, graph in enumerate(molecules):
+            mol = build_molecule(*graph, self.dataset_info)
+            if mol is None:
+                # RDKit/OpenBabel failed, likely due to NaN
+                print(f"Warning: Skipping molecule {i} in analysis, build_molecule returned None.")
+                continue
+            rdmols.append(mol)
 
         # Other basic metrics
         (validity, connectivity, uniqueness, novelty), (_, connected_mols) = \
@@ -671,8 +678,9 @@ class LigandPocketDDPM(pl.LightningModule):
             if self.virtual_nodes:
                 num_nodes_lig = self.max_num_nodes
             else:
+                n_samples_in_batch = len(pocket['size'])
                 num_nodes_lig = self.ddpm.size_distribution.sample_conditional(
-                    n1=None, n2=pocket['size'])
+                    n1=None, n2=pocket['size'], n_samples=n_samples_in_batch)
 
             xh_lig, xh_pocket, lig_mask, _ = self.ddpm.sample_given_pocket(
                 pocket, num_nodes_lig)

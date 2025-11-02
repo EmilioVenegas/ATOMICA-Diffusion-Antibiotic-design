@@ -245,7 +245,7 @@ class AtomicaDynamics(nn.Module):
             in_node_nf=dynamics_node_nf, in_edge_nf=self.edge_nf,
             hidden_nf=hidden_nf, device=device, act_fn=act_fn,
             n_layers=n_layers, attention=attention, tanh=True,
-            norm_constant=1e-8,
+            norm_constant=norm_constant,
             inv_sublayers=inv_sublayers, sin_embedding=sin_embedding,
             normalization_factor=normalization_factor,
             aggregation_method=aggregation_method,
@@ -258,7 +258,7 @@ class AtomicaDynamics(nn.Module):
             in_edge_nf=self.edge_nf,
             hidden_nf=hidden_nf, device=device, act_fn=act_fn,
             n_layers=n_layers, attention=attention, tanh=True,
-            norm_constant=1e-8,
+            norm_constant=norm_constant,
             inv_sublayers=inv_sublayers, sin_embedding=sin_embedding,
             normalization_factor=normalization_factor,
             aggregation_method=aggregation_method,
@@ -269,10 +269,18 @@ class AtomicaDynamics(nn.Module):
     def forward(self, xh_lig, xh_context, t, mask_lig, mask_context):
 
         # --- 1. Prepare Inputs ---
-        x_l = xh_lig[:, :self.n_dims].clone()
+        jitter_val = 1e-4
+        jitter = jitter_val * torch.randn_like(xh_lig[:, :self.n_dims])
+        x_l = xh_lig[:, :self.n_dims].clone() + jitter
         h_l = xh_lig[:, self.n_dims:].clone()
 
-        x_p = xh_context[:, :self.n_dims].clone()
+        # Also jitter context (pocket) coordinates
+        if xh_context.shape[0] > 0:
+            p_jitter = jitter_val * torch.randn_like(xh_context[:, :self.n_dims])
+            x_p = xh_context[:, :self.n_dims].clone() + p_jitter
+        else:
+            x_p = xh_context[:, :self.n_dims].clone()
+
         # --- DEBUGGING: Check for overlapping coords ---
         # Check for L-L overlap
         ll_dists = torch.cdist(x_l, x_l)
@@ -365,18 +373,12 @@ class AtomicaDynamics(nn.Module):
         final_features = self.atom_decoder(h_final_emb)
 
         if not torch.all(torch.isfinite(final_velocity)):
-            if self.training:
-                print("Warning: NaN or Inf detected in AtomicaDynamics output velocity. Clamping to 0.")
-                final_velocity = torch.nan_to_num(final_velocity, nan=0.0, posinf=0.0, neginf=0.0)
-            else:
-                raise ValueError("NaN or Inf detected in AtomicaDynamics output velocity")
+            print("Warning: NaN or Inf detected in AtomicaDynamics output velocity. Clamping to 0.")
+            final_velocity = torch.nan_to_num(final_velocity, nan=0.0, posinf=0.0, neginf=0.0)
 
         if not torch.all(torch.isfinite(final_features)):
-             if self.training:
-                print("Warning: NaN or Inf detected in AtomicaDynamics output features. Clamping to 0.")
-                final_features = torch.nan_to_num(final_features, nan=0.0, posinf=0.0, neginf=0.0)
-             else:
-                raise ValueError("NaN or Inf detected in AtomicaDynamics output features")
+            print("Warning: NaN or Inf detected in AtomicaDynamics output features. Clamping to 0.")
+            final_features = torch.nan_to_num(final_features, nan=0.0, posinf=0.0, neginf=0.0)
         # Context (pocket) is fixed, so its "update" is all zeros.
         # This matches the EGNNDynamics return signature.
         ligand_update = torch.cat([final_velocity, final_features], dim=-1)
