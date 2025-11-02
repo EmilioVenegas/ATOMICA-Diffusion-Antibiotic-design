@@ -154,9 +154,14 @@ def num_nodes_to_batch_mask(n_samples, num_nodes, device):
     assert isinstance(num_nodes, int) or len(num_nodes) == n_samples
 
     if isinstance(num_nodes, torch.Tensor):
+        if len(num_nodes.size()) > 1:
+            num_nodes = num_nodes.squeeze()
+                    
+        assert len(num_nodes.size()) == 1
+        assert len(num_nodes) == n_samples
         num_nodes = num_nodes.to(device)
 
-    sample_inds = torch.arange(n_samples, device=device)
+    sample_inds = torch.arange(0, n_samples, device=device)
 
     return torch.repeat_interleave(sample_inds, num_nodes)
 
