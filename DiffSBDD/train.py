@@ -8,7 +8,7 @@ from pathlib import Path
 import warnings
 
 import torch
-torch.set_float32_matmul_precision('medium')
+torch.set_float32_matmul_precision('high')
 import pytorch_lightning as pl
 import yaml
 import numpy as np
@@ -152,7 +152,9 @@ if __name__ == "__main__":
         accelerator='gpu', devices=args.gpus,
         strategy=args.strategy,
         gradient_clip_val=1.0,
-        gradient_clip_algorithm='norm'
+        gradient_clip_algorithm='norm',
+        log_every_n_steps=1,
+        accumulate_grad_batches=4
     )
 
     trainer.fit(model=pl_module, ckpt_path=ckpt_path)
