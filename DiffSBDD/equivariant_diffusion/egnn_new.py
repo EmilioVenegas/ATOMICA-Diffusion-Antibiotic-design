@@ -35,7 +35,7 @@ class GCL(nn.Module):
         else:
             out = torch.cat([source, target, edge_attr], dim=1)
         mij = self.edge_mlp(out)
-
+       
         if self.attention:
             att_val = self.att_mlp(mij)
             out = mij * att_val
@@ -51,6 +51,7 @@ class GCL(nn.Module):
         agg = unsorted_segment_sum(edge_attr, row, num_segments=x.size(0),
                                    normalization_factor=self.normalization_factor,
                                    aggregation_method=self.aggregation_method)
+        
         if node_attr is not None:
             agg = torch.cat([x, agg, node_attr], dim=1)
         else:
@@ -289,7 +290,7 @@ class SinusoidsEmbeddingNew(nn.Module):
         self.dim = len(self.frequencies) * 2
 
     def forward(self, x):
-        x = torch.sqrt(x + 1e-8)
+        x = torch.sqrt(x + 1e-6)
         emb = x * self.frequencies[None, :].to(x.device)
         emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
         return emb.detach()
@@ -378,7 +379,7 @@ class CrossGCL(nn.Module):
         else:
             out = torch.cat([source_q, target_kv, edge_attr], dim=1)
         mij = self.edge_mlp(out)
-
+        
         if self.attention:
             att_val = self.att_mlp(mij)
             out = mij * att_val
@@ -403,7 +404,7 @@ class CrossGCL(nn.Module):
         agg = unsorted_segment_sum(edge_attr, row, num_segments=h_q.size(0),
                                    normalization_factor=self.normalization_factor,
                                    aggregation_method=self.aggregation_method)
-        
+                
         if node_attr is not None:
             agg = torch.cat([h_q, agg, node_attr], dim=1)
         else:
@@ -466,7 +467,7 @@ class CrossEquivariantBlock(nn.Module):
         row, col = edge_index
         coord_diff = x_q[row] - x_kv[col]
         distances = torch.sum(coord_diff**2, 1).unsqueeze(1)
-        norm = torch.sqrt(distances + 1e-8)
+        norm = torch.sqrt(distances + 1e-6)
         coord_diff = coord_diff / (norm + self.norm_constant)
         distances = norm # Use normalized distances
 
