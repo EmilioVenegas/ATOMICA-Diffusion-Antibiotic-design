@@ -317,7 +317,8 @@ def coord2cross(x, edge_index, batch_mask, norm_constant=1):
     cross = torch.cross(x[row]-mean[batch_mask[row]],
                         x[col]-mean[batch_mask[col]], dim=1)
     norm = torch.linalg.norm(cross, dim=1, keepdim=True)
-    cross = cross / (norm + norm_constant)
+    effective_constant = max(norm_constant, 1.0)
+    cross = cross / (norm + effective_constant)
     return cross
 
 
