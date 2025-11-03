@@ -16,11 +16,12 @@ import traceback
 from ATOMICA.models.prediction_model import PredictionModel
 from ATOMICA.models.pretrain_model import DenoisePretrainModel
 from ATOMICA.models.prot_interface_model import ProteinInterfaceModel
+from DiffSBDD.constants import ATOMICA_TO_DRUGLIKE_MAP, DRUGLIKE_ATOMS_DECODER
 
 #
 # --- MODIFIED FUNCTION ---
 #
-def process_complex(line, atomica_model, device, atom_vocab_size, clash_threshold):
+def process_complex(line, atomica_model, device, clash_threshold):
     """
     Processes a single line (complex) from the .jsonl file.
     This version is corrected to handle the per-block data structure
@@ -29,6 +30,7 @@ def process_complex(line, atomica_model, device, atom_vocab_size, clash_threshol
     NEW: Includes a clash check to filter out complexes with atom distances
     below 'clash_threshold'.
     """
+    DRUGLIKE_VOCAB_SIZE = len(DRUGLIKE_ATOMS_DECODER)
     complex_data = json.loads(line)
     complex_id = complex_data.get('id', 'Unknown')
     
@@ -179,20 +181,44 @@ def process_complex(line, atomica_model, device, atom_vocab_size, clash_threshol
 
     # Save data, with error handling
     try:
-        ligand_one_hot = np.eye(atom_vocab_size)[ligand_atom_types]
+        # 1. Map ATOMICA indices (e.g., 0-120) to DRUGLIKE indices (0-8 or -1)
+        #    This uses the map you defined in constants.py
+        remapped_ligand_indices = ATOMICA_TO_DRUGLIKE_MAP[ligand_atom_types]
+
+        # 2. Create a mask to find *valid* atoms (where index is not -1)
+        #    This mask filters out 'p', 'm', 'g', and unwanted heavy atoms
+        valid_atom_mask = (remapped_ligand_indices != -1)
+
+        # 3. Filter both coordinates and indices using this mask
+        filtered_ligand_coords = ligand_coords[valid_atom_mask]
+        filtered_ligand_indices = remapped_ligand_indices[valid_atom_mask]
+
+        # 4. Check if any ligand atoms remain
+        if filtered_ligand_indices.shape[0] == 0:
+            # print(f"Skipping complex {complex_id}: No valid drug-like ligand atoms found after filtering.")
+            return None
+
+        # 5. Create one-hot encoding using the *new* vocab size and *filtered* indices
+        ligand_one_hot = np.eye(DRUGLIKE_VOCAB_SIZE, dtype=np.float32)[filtered_ligand_indices]
+
     except IndexError as e:
-        print(f"ERROR: Atom index {np.max(ligand_atom_types)} out of bounds for vocab size {atom_vocab_size}.")
-        print(f"Skipping complex {complex_id}. Please check --atom_vocab_size argument.")
+        print(f"ERROR during atom remapping/one-hot encoding for {complex_id}: {e}")
+        # This error can happen if an atom index in your jsonl is > 120
+        print(f"Original max index: {np.max(ligand_atom_types)}, Map size: {len(ATOMICA_TO_DRUGLIKE_MAP)}")
+        return None
+    except Exception as e:
+        print(f"Unhandled ERROR during atom remapping for {complex_id}: {e}")
         return None
 
+    # 6. Create the final data object with filtered data
     new_data = {
-        'lig_coords': ligand_coords.astype(np.float32),
-        'lig_one_hot': ligand_one_hot.astype(np.float32),
+        'lig_coords': filtered_ligand_coords.astype(np.float32),
+        'lig_one_hot': ligand_one_hot,
         'pocket_coords': pocket_coords.astype(np.float32),
         'pocket_atomica_embeddings': pocket_atomica_embeddings.astype(np.float32),
         'name': complex_id
     }
-    
+
     return new_data
 
 
@@ -215,7 +241,7 @@ def main(args):
 
     print(f"Starting processing of {input_file}...")
     print(f"Saving processed files to {output_dir}")
-    print(f"Using ATOM vocab size: {args.atom_vocab_size}")
+    print(f"Using ATOM vocab size: {len(DRUGLIKE_ATOMS_DECODER)} (from constants.DRUGLIKE_ATOMS_DECODER)")
     if args.clash_threshold > 0:
         print(f"Filtering enabled: Skipping complexes with any atoms closer than {args.clash_threshold} Å")
     else:
@@ -232,8 +258,7 @@ def main(args):
             try:
                 # Pass the clash_threshold argument
                 processed_data = process_complex(line, atomica_model, device, 
-                                                 args.atom_vocab_size, 
-                                                 args.clash_threshold)
+                                 args.clash_threshold)
             
             except Exception as e:
                 # ---  DETAILED ERROR BLOCK ---
@@ -275,10 +300,7 @@ if __name__ == "__main__":
                         help='Path of the model .json config to load (if not using ckpt).')
     parser.add_argument('--model_weights', type=str, default=None, 
                         help='Path of the model .pt weights to load (if not using ckpt).')
-    parser.add_argument("--atom_vocab_size", type=int, default=121,
-                        help="Total number of atom types for one-hot encoding. "
-                             "Default=121 (3 special + 118 elements).")
-    
+       
     # --- NEW ARGUMENT ---
     parser.add_argument("--clash_threshold", type=float, default=0.0,
                         help="Minimum atom distance threshold (in Å). Complexes with any atom pair "
