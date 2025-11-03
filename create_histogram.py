@@ -4,7 +4,7 @@ import torch
 from tqdm import tqdm
 import sys
 
-data_dir = Path('data/processed_atomica/train')
+data_dir = Path('data/processed_atomica')
 output_file = Path('data/processed_atomica/size_distribution.npy')
 
 if not data_dir.is_dir():

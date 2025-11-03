@@ -12,12 +12,27 @@ class CategoricalDistribution:
     EPS = 1e-10
 
     def __init__(self, histogram_dict, mapping):
-        histogram = np.zeros(len(mapping))
-        for k, v in histogram_dict.items():
-            histogram[mapping[k]] = v
+        
 
-        # Normalize histogram
-        self.p = histogram / histogram.sum()
+        # First, check if the input is a dictionary or a numpy array
+        if isinstance(histogram_dict, dict):
+            
+            histogram = np.zeros(len(mapping))
+            for k, v in histogram_dict.items():
+                if k in mapping: # Safety check
+                    histogram[mapping[k]] = v
+        
+        elif isinstance(histogram_dict, np.ndarray):
+            histogram = histogram_dict.copy()
+
+        else:
+            raise TypeError(f"CategoricalDistribution received an unsupported histogram type: {type(histogram_dict)}")
+
+        if histogram.sum() > 0:
+            self.p = histogram / histogram.sum()
+        else:
+            self.p = histogram # Avoid divide-by-zero if histogram is all zeros
+
         self.mapping = deepcopy(mapping)
 
     def kl_divergence(self, other_sample):

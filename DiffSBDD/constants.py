@@ -170,34 +170,89 @@ N_CA_DIST = 1.47
 CA_C_DIST = 1.53
 N_CA_C_ANGLE = 110 * np.pi / 180
 
+# --- START: NEW DRUG-LIKE VOCABULARY DEFINITION ---
+
+# 1. Define the small set of atoms we want our model to learn about.
+DRUGLIKE_ATOMS_DECODER = ['C', 'N', 'O', 'S', 'P', 'F', 'Cl', 'Br', 'I']
+DRUGLIKE_ATOMS_ENCODER = {atom: i for i, atom in enumerate(DRUGLIKE_ATOMS_DECODER)}
+DRUGLIKE_VOCAB_SIZE = len(DRUGLIKE_ATOMS_DECODER)
+
+# 2. Create a mapping from the large ATOMICA index to our new small index.
+#    This is used by process_atomica_jsonl.py
+ATOMICA_TO_DRUGLIKE_MAP = np.full(len(atomica_atom_decoder), -1, dtype=int)
+for atomica_idx, atom_symbol in enumerate(atomica_atom_decoder):
+    if atom_symbol in DRUGLIKE_ATOMS_ENCODER:
+        druglike_idx = DRUGLIKE_ATOMS_ENCODER[atom_symbol]
+        ATOMICA_TO_DRUGLIKE_MAP[atomica_idx] = druglike_idx
+
+# --- Programmatically generate data for the *NEW* 9-atom dataset params ---
+
+# 1. Define colors for our 9 atoms
+atom_colors = {}
+atom_colors['C'] = '#33ff33'  # Green
+atom_colors['N'] = '#3333ff'  # Blue
+atom_colors['O'] = '#ff4d4d'  # Red
+atom_colors['S'] = '#e6c540'  # Yellow
+atom_colors['P'] = '#ff8000'  # Orange
+atom_colors['F'] = '#B3FFFF'  # Light Blue
+atom_colors['Cl'] = '#1FF01F' # Bright Green
+atom_colors['Br'] = '#A62929' # Dark Red
+atom_colors['I'] = '#940094'  # Purple
+atom_colors['H'] = '#FFFFFF'  # White (not in list, but good to have)
+DEFAULT_COLOR = '#ffb5b5'     # Pink (for any missing)
+
+# 2. Create color, radius, and histogram lists *for the 9-atom vocab*
+druglike_colors_list = []
+druglike_radius_list = []
+druglike_atom_hist_array = np.zeros(DRUGLIKE_VOCAB_SIZE)
+raw_atom_hist = {'C': 1570767, 'N': 273858, 'O': 396837, 'S': 26352, 'B': 0, 
+                 'Br': 0, 'Cl': 15058, 'P': 25994, 'I': 0, 'F': 30687}
+
+for i, atom_symbol in enumerate(DRUGLIKE_ATOMS_DECODER):
+    druglike_colors_list.append(atom_colors.get(atom_symbol, DEFAULT_COLOR))
+    druglike_radius_list.append(0.3) # Default radius
+    
+    # Get histogram count
+    count = raw_atom_hist.get(atom_symbol, 0)
+    if count == 0:
+        print(f"Warning: Atom '{atom_symbol}' has 0 count in raw_atom_hist.")
+    druglike_atom_hist_array[i] = count
+
+# 3. Create the new 9x9 bond matrices
+#    (This uses your 'build_matrix' helper function and 'bonds1' raw dict)
+druglike_bonds1_matrix = build_matrix(bonds1, DRUGLIKE_ATOMS_DECODER)
+druglike_bonds2_matrix = build_matrix(bonds2, DRUGLIKE_ATOMS_DECODER)
+druglike_bonds3_matrix = build_matrix(bonds3, DRUGLIKE_ATOMS_DECODER)
+# Use bonds1 as the Lennard-Jones template
+druglike_lennard_jones_matrix = druglike_bonds1_matrix 
+
 
 # ------------------------------------------------------------------------------
 # Dataset-specific constants
 # ------------------------------------------------------------------------------
 dataset_params = {}
 
+# --- THIS IS THE CORRECTED DEFINITION ---
 dataset_params['atomica_PL'] = {
-    'atom_encoder': atomica_atom_encoder,  # Use ATOMICA atom vocab
-    'atom_decoder': atomica_atom_decoder,  # Use ATOMICA atom vocab
-    'aa_encoder': atomica_block_encoder,   # Use ATOMICA block vocab
-    'aa_decoder': atomica_block_decoder,   # Use ATOMICA block vocab
+    # Use the 9-atom vocab
+    'atom_encoder': DRUGLIKE_ATOMS_ENCODER,
+    'atom_decoder': DRUGLIKE_ATOMS_DECODER,
     
+    # Use the 9-element lists
+    'colors_dic': druglike_colors_list,
+    'radius_dic': druglike_radius_list,
+    'atom_hist': druglike_atom_hist_array,
+          
+    # Use the 9x9 matrices
+    'bonds1': druglike_bonds1_matrix,
+    'bonds2': druglike_bonds2_matrix,
+    'bonds3': druglike_bonds3_matrix,
+    'lennard_jones_rm': druglike_lennard_jones_matrix,
 
-    'colors_dic': ['#33ff33', '#3333ff', '#ff4d4d', '#e6c540', '#ffb5b5', 
-                   '#A62929', '#1FF01F', '#ff8000', '#940094', '#B3FFFF', 
-                   '#ffb5b5'], # Example, may need adjustment
-    'radius_dic': [0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3], 
-          # Bond matrices
-    'bonds1': atomica_bonds1_matrix,
-    'bonds2': atomica_bonds2_matrix,
-    'bonds3': atomica_bonds3_matrix,
-    'lennard_jones_rm': atomica_lennard_jones_matrix,
-
-      'atom_hist': {'C': 1570767, 'N': 273858, 'O': 396837, 'S': 26352, 'B': 0, 'Br': 0, 'Cl': 15058, 'P': 25994, 'I': 0, 'F': 30687},
-      'aa_hist': atomica_aa_hist,
-      
-    
-    
+    # These are for the pocket (receptor) and can stay the same
+    'aa_encoder': atomica_block_encoder,
+    'aa_decoder': atomica_block_decoder,
+    'aa_hist': atomica_aa_hist,
 }
 
 dataset_params['bindingmoad'] = {

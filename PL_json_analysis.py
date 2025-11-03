@@ -6,7 +6,7 @@ from collections import defaultdict
 from tqdm import tqdm
 
 # --- Configuration ---
-FILE_NAME = '/home/emiliovenegas/Downloads/PL.jsonl.gz'
+FILE_NAME = '/home/emiliovenegas/Downloads/PLjsonl.gz'
 
 def analyze_dataset():
     """

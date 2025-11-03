@@ -295,12 +295,14 @@ class SinusoidsEmbeddingNew(nn.Module):
         return emb.detach()
 
 
-def coord2diff(x, edge_index, norm_constant=1):
+def coord2diff(x, edge_index, norm_constant=1.0):
     row, col = edge_index
     coord_diff = x[row] - x[col]
     radial = torch.sum((coord_diff) ** 2, 1).unsqueeze(1)
-    norm = torch.sqrt(radial + 1e-8)
-    coord_diff = coord_diff/(norm + norm_constant)
+    norm = torch.sqrt(radial + 1e-6)
+    # Use at least 1.0 for stability
+    effective_constant = max(norm_constant, 1.0)
+    coord_diff = coord_diff/(norm + effective_constant)
     return radial, coord_diff
 
 
@@ -314,7 +316,8 @@ def coord2cross(x, edge_index, batch_mask, norm_constant=1):
     cross = torch.cross(x[row]-mean[batch_mask[row]],
                         x[col]-mean[batch_mask[col]], dim=1)
     norm = torch.linalg.norm(cross, dim=1, keepdim=True)
-    cross = cross / (norm + norm_constant)
+    effective_constant = max(norm_constant, 1.0)
+    cross = cross / (norm + effective_constant)
     return cross
 
 
