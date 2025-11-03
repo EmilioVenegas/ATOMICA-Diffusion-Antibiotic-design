@@ -9,3 +9,8 @@ analyse.py
 analyze_processed_data.py
 create_histogram.py
 create_histogram.py
+analyze_atomica_dataset.py
+analyze_processed_folder.py
+verification.py
+PL_json_analysis.py
+PL_json_analysis.py
