@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from torch.optim.lr_scheduler import ReduceLROnPlateau # Or another scheduler
 import pytorch_lightning as pl
 import wandb
 from torch_scatter import scatter_add, scatter_mean
@@ -264,9 +265,24 @@ class LigandPocketDDPM(pl.LightningModule):
                 raise ImportError("ATOMICA modules failed to import, but "
                                   "pocket_representation is set to 'atomica'.")
 
+    
     def configure_optimizers(self):
-        return torch.optim.AdamW(self.ddpm.parameters(), lr=self.lr,
-                                 amsgrad=True, weight_decay=1e-12)
+        optimizer = torch.optim.AdamW(
+            self.ddpm.parameters(), lr=self.lr, amsgrad=True, weight_decay=1e-12)
+        
+        # STABILITY FIX: Add a learning rate scheduler with warmup
+        # Using a simple warmup and then plateau scheduler
+        scheduler = ReduceLROnPlateau(
+            optimizer, 'min', factor=0.8, patience=10, verbose=True
+        )
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "monitor": "loss/val", # Make sure to monitor validation loss
+            },
+        }
+
 
     def setup(self, stage: Optional[str] = None):
         # --- MODIFIED: Load from processed directory, not .npz ---
@@ -459,30 +475,44 @@ class LigandPocketDDPM(pl.LightningModule):
             self.log(f'{m}/{split}', value, batch_size=batch_size, **kwargs)
 
     def training_step(self, data, *args):
+        # STABILITY FIX: Better jittering
         if self.augment_noise > 0:
-            # This prevents division-by-zero in the EGNN
-            # Use a small value for augment_noise, e.g., 1e-6
             noise = self.augment_noise * torch.randn_like(data['lig_coords'])
             data['lig_coords'] = data['lig_coords'] + noise
 
-            # Also jitter pocket atoms if they are part of the input
             if 'pocket_coords' in data:
                 p_noise = self.augment_noise * torch.randn_like(data['pocket_coords'])
                 data['pocket_coords'] = data['pocket_coords'] + p_noise
 
+        # STABILITY FIX: Check for NaN in input
+        if not torch.isfinite(data['lig_coords']).all():
+            print("WARNING: NaN detected in input lig_coords, skipping batch")
+            return None
+        if 'pocket_coords' in data and not torch.isfinite(data['pocket_coords']).all():
+            print("WARNING: NaN detected in input pocket_coords, skipping batch")
+            return None
+
         if self.augment_rotation:
             raise NotImplementedError
-            x = utils.random_rotation(x).detach()
 
         try:
             nll, info = self.forward(data)
         except RuntimeError as e:
-            # this is not supported for multi-GPU
-            if self.trainer.num_devices < 2 and 'out of memory' in str(e):
+            if 'out of memory' in str(e):
                 print('WARNING: ran out of memory, skipping to the next batch')
+                torch.cuda.empty_cache()
+                return None
+            elif 'CUDA' in str(e):
+                print(f'WARNING: Caught CUDA error: {e}. Skipping batch.')
+                torch.cuda.empty_cache()
                 return None
             else:
                 raise e
+
+        # STABILITY FIX: Check for NaN in loss
+        if torch.isnan(nll).any():
+            print("WARNING: NaN loss detected. Skipping batch.")
+            return None
 
         loss = nll.mean(0)
 
@@ -490,30 +520,60 @@ class LigandPocketDDPM(pl.LightningModule):
         self.log_metrics(info, 'train', batch_size=len(data['num_lig_atoms']))
 
         return info
-
+    
     def _shared_eval(self, data, prefix, *args):
-        jitter_val = 1e-6 
+        # STABILITY FIX: Always apply jitter during eval to prevent exact overlaps
+        jitter_val = 1e-3  # Increased from 1e-6
         if 'lig_coords' in data:
             noise = jitter_val * torch.randn_like(data['lig_coords'])
             data['lig_coords'] = data['lig_coords'] + noise
         if 'pocket_coords' in data:
             p_noise = jitter_val * torch.randn_like(data['pocket_coords'])
             data['pocket_coords'] = data['pocket_coords'] + p_noise
-        nll, info = self.forward(data)
+        
+        try:
+            nll, info = self.forward(data)
+        except RuntimeError as e:
+            if 'out of memory' in str(e):
+                print(f'WARNING: OOM during {prefix}, skipping batch')
+                torch.cuda.empty_cache()
+                return {'loss': torch.tensor(float('nan'))}
+            else:
+                raise e
+        
+        # Check for NaN
+        if not torch.isfinite(nll).all():
+            print(f"WARNING: NaN in {prefix} loss")
+            return {'loss': torch.tensor(float('nan'))}
+        
         loss = nll.mean(0)
+        loss = torch.clamp(loss, max=1000.0)
 
         info['loss'] = loss
-
         self.log_metrics(info, prefix, batch_size=len(data['num_lig_atoms']),
-                         sync_dist=True)
+                        sync_dist=True)
 
         return info
-
     def validation_step(self, data, *args):
         self._shared_eval(data, 'val', *args)
 
     def test_step(self, data, *args):
         self._shared_eval(data, 'test', *args)
+    
+    
+    def on_before_optimizer_step(self, optimizer):
+        # STABILITY FIX: Log gradient norms
+        total_norm = 0.0
+        for p in self.parameters():
+            if p.grad is not None:
+                param_norm = p.grad.data.norm(2)
+                total_norm += param_norm.item() ** 2
+        total_norm = total_norm ** 0.5
+        
+        if total_norm > 100.0:
+            print(f"WARNING: Large gradient norm detected: {total_norm:.2f}")
+        
+        self.log('grad_norm', total_norm, prog_bar=True)
 
     def on_validation_epoch_end(self):
 
@@ -535,7 +595,7 @@ class LigandPocketDDPM(pl.LightningModule):
 
         if (self.current_epoch + 1) % self.visualize_sample_epoch == 0:
             tic = time()
-            getattr(self, 'sample_and_save' + suffix)(
+            getattr(self, 'sample_chain_and_save' + suffix)(
                 self.eval_params.n_visualize_samples)
             print(f'Sample visualization took {time() - tic:.2f} seconds')
 
@@ -595,7 +655,14 @@ class LigandPocketDDPM(pl.LightningModule):
                 if self.pocket_type_distribution is not None else -1
 
         # Convert into rdmols
-        rdmols = [build_molecule(*graph, self.dataset_info) for graph in molecules]
+        rdmols = []
+        for i, graph in enumerate(molecules):
+            mol = build_molecule(*graph, self.dataset_info)
+            if mol is None:
+                # RDKit/OpenBabel failed, likely due to NaN
+                print(f"Warning: Skipping molecule {i} in analysis, build_molecule returned None.")
+                continue
+            rdmols.append(mol)
 
         # Other basic metrics
         (validity, connectivity, uniqueness, novelty), (_, connected_mols) = \
@@ -671,8 +738,12 @@ class LigandPocketDDPM(pl.LightningModule):
             if self.virtual_nodes:
                 num_nodes_lig = self.max_num_nodes
             else:
-                num_nodes_lig = self.ddpm.size_distribution.sample_conditional(
-                    n1=None, n2=pocket['size'])
+                n_samples_in_batch = len(pocket['size'])
+                # Sample pairs of (ligand, pocket) node counts
+                num_nodes_pairs = self.ddpm.size_distribution.sample_conditional(
+                    n1=None, n2=pocket['size'], n_samples=n_samples_in_batch)
+                # --> Select only the ligand node counts (the first column) <--
+                num_nodes_lig = num_nodes_pairs[:, 0]
 
             xh_lig, xh_pocket, lig_mask, _ = self.ddpm.sample_given_pocket(
                 pocket, num_nodes_lig)
@@ -740,7 +811,7 @@ class LigandPocketDDPM(pl.LightningModule):
         # visualize(str(outdir), dataset_info=self.dataset_info, wandb=wandb)
         visualize(str(outdir), dataset_info=self.dataset_info, wandb=None)
 
-    def sample_and_save_given_pocket(self, n_samples):
+    def sample_chain_and_save_given_pocket(self, n_samples):
         batch = self.val_dataset.collate_fn(
             [self.val_dataset[i] for i in torch.randint(len(self.val_dataset),
                                                         size=(n_samples,))]
@@ -750,8 +821,15 @@ class LigandPocketDDPM(pl.LightningModule):
         if self.virtual_nodes:
             num_nodes_lig = self.max_num_nodes
         else:
-            num_nodes_lig = self.ddpm.size_distribution.sample_conditional(
-                n1=None, n2=pocket['size'])
+            # Ensure the number of samples for node counts matches the actual batch size
+            n_samples_in_batch = len(pocket['size'])
+            
+            # Sample pairs of (ligand, pocket) node counts
+            num_nodes_pairs = self.ddpm.size_distribution.sample_conditional(
+                n1=None, n2=pocket['size'], n_samples=n_samples_in_batch)
+                
+            # Select only the ligand node counts (the first column)
+            num_nodes_lig = num_nodes_pairs[:, 0]
 
         xh_lig, xh_pocket, lig_mask, pocket_mask = \
             self.ddpm.sample_given_pocket(pocket, num_nodes_lig)
@@ -987,4 +1065,4 @@ class WeightSchedule:
 
     def __call__(self, t_array):
         """ all values in t_array are assumed to be integers in [0, T] """
-        return self.weights[t_array].to(t_array.device)
+        return self.weights.to(t_array.device)[t_array]

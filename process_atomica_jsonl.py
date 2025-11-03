@@ -16,19 +16,21 @@ import traceback
 from ATOMICA.models.prediction_model import PredictionModel
 from ATOMICA.models.pretrain_model import DenoisePretrainModel
 from ATOMICA.models.prot_interface_model import ProteinInterfaceModel
+from DiffSBDD.constants import ATOMICA_TO_DRUGLIKE_MAP, DRUGLIKE_ATOMS_DECODER
 
 #
-# --- TCORRECTED FUNCTION ---
+# --- MODIFIED FUNCTION ---
 #
-
-
-
-def process_complex(line, atomica_model, device, atom_vocab_size):
+def process_complex(line, atomica_model, device, clash_threshold):
     """
     Processes a single line (complex) from the .jsonl file.
     This version is corrected to handle the per-block data structure
     and safely skip lines with missing data.
+    
+    NEW: Includes a clash check to filter out complexes with atom distances
+    below 'clash_threshold'.
     """
+    DRUGLIKE_VOCAB_SIZE = len(DRUGLIKE_ATOMS_DECODER)
     complex_data = json.loads(line)
     complex_id = complex_data.get('id', 'Unknown')
     
@@ -38,7 +40,7 @@ def process_complex(line, atomica_model, device, atom_vocab_size):
         data = complex_data.get('data')
         if data is None:
             # This line will print if the 'data' key is missing
-            print(f"Skipping complex {complex_id}: Top-level 'data' key is missing.")
+            # print(f"Skipping complex {complex_id}: Top-level 'data' key is missing.")
             return None
 
         # Use .get() for all required keys. 
@@ -50,7 +52,7 @@ def process_complex(line, atomica_model, device, atom_vocab_size):
 
         if any(v is None for v in [x_list, a_list, b_blocks_list, block_lengths_list, seg_blocks_list]):
             # This line will print if 'block_lengths' or any other key is missing
-            print(f"Skipping complex {complex_id}: Missing one or more required data keys (X, A, B, block_lengths, or segment_ids).")
+            # print(f"Skipping complex {complex_id}: Missing one or more required data keys (X, A, B, block_lengths, or segment_ids).")
             return None
 
         # --- All keys exist,convert to numpy arrays ---
@@ -67,7 +69,7 @@ def process_complex(line, atomica_model, device, atom_vocab_size):
         
         # Check for empty complexes before sum()
         if len(block_lengths) == 0:
-             print(f"Skipping complex {complex_id}: 'block_lengths' is empty.")
+             # print(f"Skipping complex {complex_id}: 'block_lengths' is empty.")
              return None
 
         if not (sum(block_lengths) == len(x) == len(a)):
@@ -79,16 +81,13 @@ def process_complex(line, atomica_model, device, atom_vocab_size):
         print(f"Skipping complex {complex_id} due to parsing/validation error: {e}")
         return None
 
-    # Reconstruct per-atom arrays from blocks, as original dataset does not explicitly store pertenence of atoms, just blocks
+    # Reconstruct per-atom arrays from blocks
     pocket_coords_list = []
     pocket_atom_types_list = []
-    
     pocket_B_types_list = []
     ligand_coords_list = []
     ligand_atom_types_list = []
     pocket_block_lengths_list = []
-
-
     
     atom_count = 0
     for i in range(len(seg_blocks)):
@@ -116,10 +115,10 @@ def process_complex(line, atomica_model, device, atom_vocab_size):
 
     # Concatenate lists into final numpy arrays
     if not pocket_coords_list:
-        print(f"Warning: Complex {complex_id} has no pocket atoms. Skipping.")
+        # print(f"Warning: Complex {complex_id} has no pocket atoms. Skipping.")
         return None
     if not ligand_coords_list:
-        print(f"Warning: Complex {complex_id} has no ligand atoms. Skipping.")
+        # print(f"Warning: Complex {complex_id} has no ligand atoms. Skipping.")
         return None
 
     # Create pocket arrays
@@ -127,17 +126,53 @@ def process_complex(line, atomica_model, device, atom_vocab_size):
     pocket_atom_types = np.concatenate(pocket_atom_types_list, axis=0)
     pocket_block_lengths = np.array(pocket_block_lengths_list)
     pocket_B_types = np.array(pocket_B_types_list)
-    pocket_block_lengths = np.array(pocket_block_lengths_list)
-
-    num_pocket_blocks = len(pocket_block_lengths)
-    pocket_segment_ids = np.zeros(num_pocket_blocks, dtype=np.int64)
     
     # Create ligand arrays
     ligand_coords = np.concatenate(ligand_coords_list, axis=0)
     ligand_atom_types = np.concatenate(ligand_atom_types_list, axis=0)
+    
+    num_pocket_blocks = len(pocket_block_lengths)
+    pocket_segment_ids = np.zeros(num_pocket_blocks, dtype=np.int64) # Dummy var for format_atomica_batch
+
+    # --- NEW: ATOM CLASH CHECK ---
+    if clash_threshold > 0:
+        with torch.no_grad():
+            # Move to CPU for distance checks to avoid GPU OOM
+            lig_coords_t = torch.from_numpy(ligand_coords).to('cpu')
+            pocket_coords_t = torch.from_numpy(pocket_coords).to('cpu')
+            
+            # 1. Intra-ligand
+            if lig_coords_t.shape[0] > 1:
+                lig_dists = torch.pdist(lig_coords_t)
+                if lig_dists.shape[0] > 0 and lig_dists.min() < clash_threshold:
+                    print(f"Skipping complex {complex_id}: Intra-ligand clash (min: {lig_dists.min():.4f}Å < {clash_threshold}Å)")
+                    return None
+            
+            # 2. Intra-pocket (Warning: can be slow/memory-intensive)
+            if pocket_coords_t.shape[0] > 1:
+                try:
+                    pocket_dists = torch.pdist(pocket_coords_t) 
+                    if pocket_dists.shape[0] > 0 and pocket_dists.min() < clash_threshold:
+                        print(f"Skipping complex {complex_id}: Intra-pocket clash (min: {pocket_dists.min():.4f}Å < {clash_threshold}Å)")
+                        return None
+                except RuntimeError as e:
+                    if "out of memory" in str(e) or "too large" in str(e):
+                         print(f"WARNING: Skipping intra-pocket clash check for {complex_id} (too large).")
+                    else:
+                        raise e # Re-raise other errors
+
+            # 3. Inter-ligand-pocket
+            if lig_coords_t.shape[0] > 0 and pocket_coords_t.shape[0] > 0:
+                inter_dists = torch.cdist(lig_coords_t, pocket_coords_t)
+                if inter_dists.numel() > 0 and inter_dists.min() < clash_threshold:
+                    print(f"Skipping complex {complex_id}: Ligand-pocket clash (min: {inter_dists.min():.4f}Å < {clash_threshold}Å)")
+                    return None
+    # --- END CLASH CHECK ---
 
     # generate Embeddings
-    atomica_batch = format_atomica_batch(pocket_coords, pocket_atom_types, pocket_B_types, pocket_block_lengths, pocket_block_lengths, device)
+    atomica_batch = format_atomica_batch(pocket_coords, pocket_atom_types, 
+                                       pocket_B_types, pocket_block_lengths, 
+                                       pocket_segment_ids, device)
     
     with torch.no_grad():
         atomica_output = atomica_model.infer(atomica_batch)
@@ -146,20 +181,44 @@ def process_complex(line, atomica_model, device, atom_vocab_size):
 
     # Save data, with error handling
     try:
-        ligand_one_hot = np.eye(atom_vocab_size)[ligand_atom_types]
+        # 1. Map ATOMICA indices (e.g., 0-120) to DRUGLIKE indices (0-8 or -1)
+        #    This uses the map you defined in constants.py
+        remapped_ligand_indices = ATOMICA_TO_DRUGLIKE_MAP[ligand_atom_types]
+
+        # 2. Create a mask to find *valid* atoms (where index is not -1)
+        #    This mask filters out 'p', 'm', 'g', and unwanted heavy atoms
+        valid_atom_mask = (remapped_ligand_indices != -1)
+
+        # 3. Filter both coordinates and indices using this mask
+        filtered_ligand_coords = ligand_coords[valid_atom_mask]
+        filtered_ligand_indices = remapped_ligand_indices[valid_atom_mask]
+
+        # 4. Check if any ligand atoms remain
+        if filtered_ligand_indices.shape[0] == 0:
+            # print(f"Skipping complex {complex_id}: No valid drug-like ligand atoms found after filtering.")
+            return None
+
+        # 5. Create one-hot encoding using the *new* vocab size and *filtered* indices
+        ligand_one_hot = np.eye(DRUGLIKE_VOCAB_SIZE, dtype=np.float32)[filtered_ligand_indices]
+
     except IndexError as e:
-        print(f"ERROR: Atom index {np.max(ligand_atom_types)} is out of bounds for vocab size {atom_vocab_size}.")
-        print(f"Skipping complex {complex_id}. Please check --atom_vocab_size argument.")
+        print(f"ERROR during atom remapping/one-hot encoding for {complex_id}: {e}")
+        # This error can happen if an atom index in your jsonl is > 120
+        print(f"Original max index: {np.max(ligand_atom_types)}, Map size: {len(ATOMICA_TO_DRUGLIKE_MAP)}")
+        return None
+    except Exception as e:
+        print(f"Unhandled ERROR during atom remapping for {complex_id}: {e}")
         return None
 
+    # 6. Create the final data object with filtered data
     new_data = {
-        'lig_coords': ligand_coords.astype(np.float32),
-        'lig_one_hot': ligand_one_hot.astype(np.float32),
+        'lig_coords': filtered_ligand_coords.astype(np.float32),
+        'lig_one_hot': ligand_one_hot,
         'pocket_coords': pocket_coords.astype(np.float32),
         'pocket_atomica_embeddings': pocket_atomica_embeddings.astype(np.float32),
         'name': complex_id
     }
-    
+
     return new_data
 
 
@@ -182,16 +241,24 @@ def main(args):
 
     print(f"Starting processing of {input_file}...")
     print(f"Saving processed files to {output_dir}")
-    print(f"Using ATOM vocab size: {args.atom_vocab_size}")
+    print(f"Using ATOM vocab size: {len(DRUGLIKE_ATOMS_DECODER)} (from constants.DRUGLIKE_ATOMS_DECODER)")
+    if args.clash_threshold > 0:
+        print(f"Filtering enabled: Skipping complexes with any atoms closer than {args.clash_threshold} Å")
+    else:
+        print("Filtering disabled (--clash_threshold is 0.0)")
+
 
     count = 0
+    skipped_count = 0
     with gzip.open(input_file, 'rt', encoding='utf-8') as f:
         for line in tqdm(f):
             if not line.strip():
                 continue
             
             try:
-                processed_data = process_complex(line, atomica_model, device, args.atom_vocab_size)
+                # Pass the clash_threshold argument
+                processed_data = process_complex(line, atomica_model, device, 
+                                 args.clash_threshold)
             
             except Exception as e:
                 # ---  DETAILED ERROR BLOCK ---
@@ -204,6 +271,7 @@ def main(args):
                 print("------------------------------------------\n")
                 # -----
                 processed_data = None
+                
             if processed_data:
                 file_name = f"complex_{count:06d}.pt"
                 file_path = output_dir / file_name
@@ -213,9 +281,13 @@ def main(args):
                 
                 torch.save(tensor_data, file_path)
                 count += 1
+            else:
+                skipped_count += 1
+
 
     print(f"\nProcessing complete.")
     print(f"Successfully processed and saved {count} complexes to {output_dir}.")
+    print(f"Skipped {skipped_count} complexes (due to errors or filtering).")
 
 
 if __name__ == "__main__":
@@ -228,9 +300,12 @@ if __name__ == "__main__":
                         help='Path of the model .json config to load (if not using ckpt).')
     parser.add_argument('--model_weights', type=str, default=None, 
                         help='Path of the model .pt weights to load (if not using ckpt).')
-    parser.add_argument("--atom_vocab_size", type=int, default=121,
-                        help="Total number of atom types for one-hot encoding. "
-                             "Default=121 (3 special + 118 elements).")
+       
+    # --- NEW ARGUMENT ---
+    parser.add_argument("--clash_threshold", type=float, default=0.0,
+                        help="Minimum atom distance threshold (in Å). Complexes with any atom pair "
+                             "(lig-lig, pocket-pocket, or lig-pocket) closer than this value "
+                             "will be skipped. Default: 0.0 (no filtering). Recommended: 0.5")
     
     args = parser.parse_args()
     
@@ -238,3 +313,4 @@ if __name__ == "__main__":
         parser.error("You must provide either --model_ckpt or both --model_config and --model_weights.")
         
     main(args)
+
