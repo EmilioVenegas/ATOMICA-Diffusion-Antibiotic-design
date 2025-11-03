@@ -249,7 +249,7 @@ class AtomicaDynamics(nn.Module):
         
         # 2. Ligand-Pocket (L-P) Module
         self.cross_attention = SE3CrossAttention(
-            in_node_nf_q=dynamics_node_nf, in_node_nf_kv=hidden_nf,
+            in_node_nf_q=dynamics_node_nf, in_node_nf_kv=dynamics_node_nf,
             in_edge_nf=self.edge_nf,
             hidden_nf=hidden_nf, device=device, act_fn=act_fn,
             n_layers=n_layers, attention=attention, tanh=True,
@@ -274,77 +274,90 @@ class AtomicaDynamics(nn.Module):
         # STABILITY CHECK: Verify no NaN in inputs
         if torch.isnan(x_l).any() or torch.isnan(h_l).any():
             print("ERROR: NaN in input to AtomicaDynamics")
-            # Replace NaN with zeros as a fallback
             x_l = torch.nan_to_num(x_l, nan=0.0)
             h_l = torch.nan_to_num(h_l, nan=0.0)
 
-        # Embed features with layer norm for stability
+        # STABILITY FIX: Apply LayerNorm *before* encoder
+        h_l = F.layer_norm(h_l, h_l.shape[1:])
         h_l_emb = self.atom_encoder(h_l)
-        h_l_emb = F.layer_norm(h_l_emb, h_l_emb.shape[1:])
         
+        h_p_atomica = F.layer_norm(h_p_atomica, h_p_atomica.shape[1:])
         h_p_emb = self.context_encoder(h_p_atomica)
-        h_p_emb = F.layer_norm(h_p_emb, h_p_emb.shape[1:])
 
-        # Condition ligand features on time
+        # Condition features on time
         if self.condition_time:
             if np.prod(t.size()) == 1:
-                h_time = torch.empty_like(h_l_emb[:, 0:1]).fill_(t.item())
+                h_time_l = torch.empty_like(h_l_emb[:, 0:1]).fill_(t.item())
+                h_time_p = torch.empty_like(h_p_emb[:, 0:1]).fill_(t.item())
             else:
-                h_time = t[mask_lig]
-            h_l_t = torch.cat([h_l_emb, h_time], dim=1)
+                h_time_l = t[mask_lig]
+                h_time_p = t[mask_context]
+
+            h_l_t = torch.cat([h_l_emb, h_time_l], dim=1)
+            h_p_t = torch.cat([h_p_emb, h_time_p], dim=1)
         else:
             h_l_t = h_l_emb
+            h_p_t = h_p_emb
 
-        # --- 2. L-L Path (Internal Physics) ---
+        # --- 2. L-L Path (Internal Physics FIRST) ---
         edges_ll = self.get_ligand_edges(mask_lig, x_l)
         
-        # STABILITY FIX: Handle case with no edges
         if edges_ll.shape[1] == 0:
-            vel_ll = torch.zeros_like(x_l)
-            h_update_ll_features = h_l_emb # No update
+            # No L-L edges, so no chemistry update
+            h_ll_final = h_l_t.clone()
+            x_ll_final = x_l.clone()
+            vel_ll = torch.zeros_like(x_l) # Store the L-L velocity
         else:
             edge_attr_ll = None
             if self.edge_nf > 0:
                 edge_types_ll = torch.ones(edges_ll.size(1), dtype=int, device=edges_ll.device)
                 edge_attr_ll = self.edge_embedding(edge_types_ll)
 
+            # Run the chemistry brain
             h_ll_final, x_ll_final = self.egnn(
                 h_l_t, x_l, edges_ll,
                 node_mask=mask_lig.unsqueeze(-1), 
                 batch_mask=mask_lig,
                 edge_attr=edge_attr_ll
             )
+            # This is the velocity *just from chemistry*
             vel_ll = (x_ll_final - x_l)
-            h_update_ll_features = h_ll_final[:, :-1] if self.condition_time else h_ll_final
+            
+        # h_ll_final and x_ll_final are now the "chemically-aware" ligand state
 
-        # --- 3. L-P Path (Cross-Attention Interaction) ---
-        edges_lp = self.get_cross_edges(mask_lig, mask_context, x_l, x_p)
+        # Find neighbors using the *new* chemically-aware coordinates
+        edges_lp = self.get_cross_edges(mask_lig, mask_context, x_ll_final, x_p)
 
-        # STABILITY FIX: Handle case with no edges
         if edges_lp.shape[1] == 0:
-            vel_lp = torch.zeros_like(x_l)
-            h_update_lp_features = h_l_emb # No update
+            # No L-P edges, so the final state is just the chemistry state
+            final_velocity = vel_ll
+            h_final_emb = h_ll_final[:, :-1] if self.condition_time else h_ll_final
         else:
             edge_attr_lp = None
             if self.edge_nf > 0:
                 edge_types_lp = torch.zeros(edges_lp.size(1), dtype=int, device=edges_lp.device)
                 edge_attr_lp = self.edge_embedding(edge_types_lp)
 
+            # Run the pocket brain
+            # INPUT is the OUTPUT from the L-L path
             h_lp_final, x_lp_final = self.cross_attention(
-                h_q=h_l_t, x_q=x_l, 
-                h_kv=h_p_emb, x_kv=x_p, 
+                h_q=h_ll_final, x_q=x_ll_final, 
+                h_kv=h_p_t, x_kv=x_p, 
                 edge_index=edges_lp, 
                 node_mask_q=mask_lig.unsqueeze(-1),
                 batch_mask=mask_lig,
                 edge_attr=edge_attr_lp
             )
-            vel_lp = (x_lp_final - x_l)
-            h_update_lp_features = h_lp_final[:, :-1] if self.condition_time else h_lp_final
+            
+            # The final state *is* the output of the L-P path
+            # We calculate velocity relative to the *original* x_l
+            final_velocity = (x_lp_final - x_l)
+            h_final_emb = h_lp_final[:, :-1] if self.condition_time else h_lp_final
 
-        # --- 4. Combine Updates ---
+        # --- 4. Combine Updates (No longer needed, it's sequential) ---
         # STABILITY FIX: Average updates instead of adding
-        final_velocity = (vel_ll + vel_lp) / 2.0
-        h_final_emb = (h_update_ll_features + h_update_lp_features) / 2.0
+        #final_velocity = vel_ll + vel_lp
+        #h_final_emb = h_update_ll_features + h_update_lp_features
         
         # Decode features back to original atom_nf
         final_features = self.atom_decoder(h_final_emb)
@@ -360,6 +373,7 @@ class AtomicaDynamics(nn.Module):
         pocket_update = torch.zeros_like(xh_context)
 
         return ligand_update, pocket_update
+    
     def get_ligand_edges(self, batch_mask_ligand, x_ligand):
         adj_ligand = batch_mask_ligand[:, None] == batch_mask_ligand[None, :]
         if self.edge_cutoff_l is not None:
