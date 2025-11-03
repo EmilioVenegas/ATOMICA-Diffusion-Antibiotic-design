@@ -1004,24 +1004,25 @@ class DistributionNodes(object):
         return n_nodes
 
     def sample_conditional(self, n1=None, n2=None, n_samples=1):
-        # --- FIX: Handle 1D case ---
         if not self.is_2d:
-            # For 1D, we can only sample unconditionally.
-            # This is called by ConditionalDDPM, but it only needs n1 (ligand nodes).
-            # We ignore n2 and return samples for n1.
             return self.sample(n_samples)
-        # --- End Fix ---
             
         assert (n1 is None) ^ (n2 is None)
         if n2 is not None:
-            # n2 is a tensor of pocket node counts
-            # We sample n1 (ligand nodes) given n2
-            n1 = self.n1_given_n2[n2].sample()
+            n1_samples = []
+            for pocket_size in n2:
+                dist = self.n1_given_n2[pocket_size.item()]
+                n1_samples.append(dist.sample())
+            
+            n1 = torch.stack(n1_samples)
             n_nodes = torch.stack((n1, n2.to(n1.device)), dim=1)
         else:
-            # n1 is a tensor of ligand node counts
-            # We sample n2 (pocket nodes) given n1
-            n2 = self.n2_given_n1[n1].sample()
+            n2_samples = []
+            for ligand_size in n1:
+                dist = self.n2_given_n1[ligand_size.item()]
+                n2_samples.append(dist.sample())
+            
+            n2 = torch.stack(n2_samples)
             n_nodes = torch.stack((n1.to(n2.device), n2), dim=1)
         return n_nodes
 
