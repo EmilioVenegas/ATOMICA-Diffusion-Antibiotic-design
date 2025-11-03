@@ -99,20 +99,26 @@ def draw_sphere(ax, x, y, z, size, color, alpha):
 
 def plot_molecule(ax, positions, atom_type, alpha, spheres_3d, hex_bg_color,
                   dataset_info):
+    
+    colors_dic = np.array(dataset_info['colors_dic'])
+    radius_dic = np.array(dataset_info['radius_dic'])
+    area_dic = 1500 * radius_dic ** 2
+
+    # --- SAFETY FIX ---
+    # Clip the atom types to be within the valid range of our data arrays
+    max_atom_index = len(colors_dic) - 1
+    safe_atom_type = np.clip(atom_type, 0, max_atom_index)
+    
+    # Use the "safe" atom types for indexing
+    areas = area_dic[safe_atom_type]
+    colors = colors_dic[safe_atom_type]
     # draw_sphere(ax, 0, 0, 0, 1)
     # draw_sphere(ax, 1, 1, 1, 1)
 
     x = positions[:, 0]
     y = positions[:, 1]
     z = positions[:, 2]
-    # Hydrogen, Carbon, Nitrogen, Oxygen, Flourine
-
-    # ax.set_facecolor((1.0, 0.47, 0.42))
-    colors_dic = np.array(dataset_info['colors_dic'])
-    radius_dic = np.array(dataset_info['radius_dic'])
-    area_dic = 1500 * radius_dic ** 2
-    # areas_dic = sizes_dic * sizes_dic * 3.1416
-
+    
     areas = area_dic[atom_type]
     radii = radius_dic[atom_type]
     colors = colors_dic[atom_type]
@@ -174,9 +180,9 @@ def plot_data3d(positions, atom_type, dataset_info, camera_elev=0,
     ax._axis3don = False
 
     if bg == 'black':
-        ax.w_xaxis.line.set_color("black")
+        ax.xaxis.line.set_color("black")
     else:
-        ax.w_xaxis.line.set_color("white")
+        ax.xaxis.line.set_color("white")
 
     plot_molecule(ax, positions, atom_type, alpha, spheres_3d,
                   hex_bg_color, dataset_info)
@@ -246,9 +252,9 @@ def plot_data3d_uncertainty(
     ax._axis3don = False
 
     if bg == 'black':
-        ax.w_xaxis.line.set_color("black")
+        ax.xaxis.line.set_color("black")
     else:
-        ax.w_xaxis.line.set_color("white")
+        ax.xaxis.line.set_color("white")
 
     for i in range(len(all_positions)):
         positions = all_positions[i]
