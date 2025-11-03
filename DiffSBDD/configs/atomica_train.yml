@@ -1,4 +1,4 @@
-run_name: 'SE3-cond-CA-1-5-sm-2-v2' # New run name
+run_name: '128h-nocutoff-v6' # New run name
 logdir: './my_logs'
 wandb_params:
   mode: 'disabled'
@@ -14,7 +14,7 @@ num_sanity_val_steps: 0
 mode: 'pocket_conditioning'
 pocket_representation: 'atomica'
 batch_size: 2
-lr: 1.0e-5 # Slightly higher LR, relying on scheduler
+lr: 5.0e-5 # Slightly higher LR, relying on scheduler
 noise_factor: 1.0
 n_epochs: 1000
 num_workers: 8
@@ -27,21 +27,21 @@ augment_noise: 1.0e-4 # Reduced jitter
 accumulate_grad_batches: 8
 gradient_clip_val: 0.5 # More aggressive gradient clipping
 
-auxiliary_loss: True
+auxiliary_loss: False
 loss_params:
-  max_weight: 0.1
+  max_weight: 0.01
   schedule: 'linear'
-  clamp_lj: 3.0
+  clamp_lj: 1.0
 
 egnn_params:
-  context_nf: 512
+  #context_nf: 512
   device: 'cuda'
-  edge_cutoff_ligand: 4.0 # Set explicit cutoffs
-  edge_cutoff_pocket: 5.0
+  edge_cutoff_ligand: null # Set explicit cutoffs
+  #edge_cutoff_pocket: 5.0
   edge_cutoff_interaction: 5.0
   reflection_equivariant: True
   atomica_embed_dim: 32
-  joint_nf: 64
+  #joint_nf: 128
   hidden_nf: 128
   n_layers: 4
   attention: True

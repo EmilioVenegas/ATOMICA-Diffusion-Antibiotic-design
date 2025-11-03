@@ -147,6 +147,7 @@ if __name__ == "__main__":
         max_epochs=args.n_epochs,
         logger=logger,
         callbacks=[checkpoint_callback],
+        #precision='16-mixed',
         enable_progress_bar=args.enable_progress_bar,
         num_sanity_val_steps=args.num_sanity_val_steps,
         accelerator='gpu', 
