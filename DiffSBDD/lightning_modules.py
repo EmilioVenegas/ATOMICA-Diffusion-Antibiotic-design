@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from torch.optim.lr_scheduler import ReduceLROnPlateau # Or another scheduler
 import pytorch_lightning as pl
 import wandb
 from torch_scatter import scatter_add, scatter_mean
@@ -267,32 +268,18 @@ class LigandPocketDDPM(pl.LightningModule):
     
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(
-            self.ddpm.parameters(), 
-            lr=self.lr,
-            amsgrad=True, 
-            weight_decay=1e-3,
-            eps=1e-8  # STABILITY: Increase epsilon
+            self.ddpm.parameters(), lr=self.lr, amsgrad=True, weight_decay=1e-12)
+        
+        # STABILITY FIX: Add a learning rate scheduler with warmup
+        # Using a simple warmup and then plateau scheduler
+        scheduler = ReduceLROnPlateau(
+            optimizer, 'min', factor=0.8, patience=10, verbose=True
         )
-        
-        # CRITICAL: Add learning rate scheduler with warmup
-        def lr_lambda(epoch):
-            warmup_epochs = 5
-            if epoch < warmup_epochs:
-                # Linear warmup from 0.1 to 1.0
-                return 0.1 + 0.9 * (epoch / warmup_epochs)
-            else:
-                # Cosine decay after warmup
-                progress = (epoch - warmup_epochs) / (self.trainer.max_epochs - warmup_epochs)
-                return 0.5 * (1.0 + np.cos(np.pi * progress))
-        
-        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-        
         return {
             "optimizer": optimizer,
             "lr_scheduler": {
                 "scheduler": scheduler,
-                "interval": "epoch",
-                "frequency": 1,
+                "monitor": "loss/val", # Make sure to monitor validation loss
             },
         }
 
@@ -515,20 +502,19 @@ class LigandPocketDDPM(pl.LightningModule):
                 print('WARNING: ran out of memory, skipping to the next batch')
                 torch.cuda.empty_cache()
                 return None
+            elif 'CUDA' in str(e):
+                print(f'WARNING: Caught CUDA error: {e}. Skipping batch.')
+                torch.cuda.empty_cache()
+                return None
             else:
                 raise e
 
         # STABILITY FIX: Check for NaN in loss
-        if not torch.isfinite(nll).all():
-            print("WARNING: NaN detected in loss, skipping batch")
-            print(f"  Loss values: {nll}")
-            print(f"  Info: {info}")
+        if torch.isnan(nll).any():
+            print("WARNING: NaN loss detected. Skipping batch.")
             return None
 
         loss = nll.mean(0)
-
-        # STABILITY FIX: Clamp loss to prevent explosions
-        loss = torch.clamp(loss, max=1000.0)
 
         info['loss'] = loss
         self.log_metrics(info, 'train', batch_size=len(data['num_lig_atoms']))
@@ -609,7 +595,7 @@ class LigandPocketDDPM(pl.LightningModule):
 
         if (self.current_epoch + 1) % self.visualize_sample_epoch == 0:
             tic = time()
-            getattr(self, 'sample_and_save' + suffix)(
+            getattr(self, 'sample_chain_and_save' + suffix)(
                 self.eval_params.n_visualize_samples)
             print(f'Sample visualization took {time() - tic:.2f} seconds')
 
@@ -753,8 +739,11 @@ class LigandPocketDDPM(pl.LightningModule):
                 num_nodes_lig = self.max_num_nodes
             else:
                 n_samples_in_batch = len(pocket['size'])
-                num_nodes_lig = self.ddpm.size_distribution.sample_conditional(
+                # Sample pairs of (ligand, pocket) node counts
+                num_nodes_pairs = self.ddpm.size_distribution.sample_conditional(
                     n1=None, n2=pocket['size'], n_samples=n_samples_in_batch)
+                # --> Select only the ligand node counts (the first column) <--
+                num_nodes_lig = num_nodes_pairs[:, 0]
 
             xh_lig, xh_pocket, lig_mask, _ = self.ddpm.sample_given_pocket(
                 pocket, num_nodes_lig)
@@ -822,7 +811,7 @@ class LigandPocketDDPM(pl.LightningModule):
         # visualize(str(outdir), dataset_info=self.dataset_info, wandb=wandb)
         visualize(str(outdir), dataset_info=self.dataset_info, wandb=None)
 
-    def sample_and_save_given_pocket(self, n_samples):
+    def sample_chain_and_save_given_pocket(self, n_samples):
         batch = self.val_dataset.collate_fn(
             [self.val_dataset[i] for i in torch.randint(len(self.val_dataset),
                                                         size=(n_samples,))]
@@ -832,8 +821,15 @@ class LigandPocketDDPM(pl.LightningModule):
         if self.virtual_nodes:
             num_nodes_lig = self.max_num_nodes
         else:
-            num_nodes_lig = self.ddpm.size_distribution.sample_conditional(
-                n1=None, n2=pocket['size'])
+            # Ensure the number of samples for node counts matches the actual batch size
+            n_samples_in_batch = len(pocket['size'])
+            
+            # Sample pairs of (ligand, pocket) node counts
+            num_nodes_pairs = self.ddpm.size_distribution.sample_conditional(
+                n1=None, n2=pocket['size'], n_samples=n_samples_in_batch)
+                
+            # Select only the ligand node counts (the first column)
+            num_nodes_lig = num_nodes_pairs[:, 0]
 
         xh_lig, xh_pocket, lig_mask, pocket_mask = \
             self.ddpm.sample_given_pocket(pocket, num_nodes_lig)
@@ -1069,4 +1065,4 @@ class WeightSchedule:
 
     def __call__(self, t_array):
         """ all values in t_array are assumed to be integers in [0, T] """
-        return self.weights[t_array].to(t_array.device)
+        return self.weights.to(t_array.device)[t_array]
