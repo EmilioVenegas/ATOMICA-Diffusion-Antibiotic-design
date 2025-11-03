@@ -1,7 +1,7 @@
-run_name: 'SE3-cond-CA-bs16-stable-aggressive'
+run_name: 'SE3-cond-CA-1-5-sm-2-v2' # New run name
 logdir: './my_logs'
 wandb_params:
-  mode: 'disabled'  # disabled, offline, online
+  mode: 'disabled'
   entity: 'my_username'
   group: 'atomica'
 dataset: 'atomica_PL'
@@ -11,31 +11,32 @@ atomica_model_weights: ATOMICA/pretrain/pretrain_model_weights.pt
 enable_progress_bar: True
 num_sanity_val_steps: 0
 
-mode: 'pocket_conditioning'  # joint, pocket_conditioning
-pocket_representation: atomica  # CA, full-atom
+mode: 'pocket_conditioning'
+pocket_representation: 'atomica'
 batch_size: 2
-lr: 1.0e-5
+lr: 1.0e-5 # Slightly higher LR, relying on scheduler
 noise_factor: 1.0
 n_epochs: 1000
 num_workers: 8
 gpus: 1
-strategy: auto
+strategy: 'auto'
 clip_grad: True
 augment_rotation: False
-augment_noise: 1.0e-3
-accumulate_grad_batches: 8
-gradient_clip_val: 1.0
 
-auxiliary_loss: False
+augment_noise: 1.0e-4 # Reduced jitter
+accumulate_grad_batches: 8
+gradient_clip_val: 0.5 # More aggressive gradient clipping
+
+auxiliary_loss: True
 loss_params:
-  max_weight: 100.0
+  max_weight: 0.1
   schedule: 'linear'
   clamp_lj: 3.0
 
 egnn_params:
   context_nf: 512
   device: 'cuda'
-  edge_cutoff_ligand: null
+  edge_cutoff_ligand: 4.0 # Set explicit cutoffs
   edge_cutoff_pocket: 5.0
   edge_cutoff_interaction: 5.0
   reflection_equivariant: True
@@ -45,19 +46,19 @@ egnn_params:
   n_layers: 4
   attention: True
   tanh: True  
-  norm_constant: 1
+  norm_constant: 1.0 # Ensure this is a float
   inv_sublayers: 1
   sin_embedding: False
-  aggregation_method: 'sum'
-  normalization_factor: 100 #1  # used if aggregation_method='sum'
+  aggregation_method: 'mean'
+  normalization_factor: 1.0 # Not used for 'mean', but set to 1 for safety
   edge_embedding_dim: 32
 
 diffusion_params:
   diffusion_steps: 500
-  diffusion_noise_schedule: 'polynomial_2'  # learned, cosine
-  diffusion_noise_precision: 5.0e-4
-  diffusion_loss_type: 'l2'  # vlb, l2
-  normalize_factors: [10, 1]  #[10, 4]  # [x, h]
+  diffusion_noise_schedule: 'polynomial_2'
+  diffusion_noise_precision: 1.0e-4 # Slightly higher precision
+  diffusion_loss_type: 'l2'
+  normalize_factors: [1.0, 5.0] 
 
 eval_epochs: 50
 visualize_sample_epoch: 50
