@@ -4,7 +4,6 @@ import torch
 import math
 
 
-
 class GCL(nn.Module):
     def __init__(self, input_nf, output_nf, hidden_nf, normalization_factor, aggregation_method,
                  edges_in_d=0, nodes_att_dim=0, act_fn=nn.SiLU(), attention=False):
