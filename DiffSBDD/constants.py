@@ -204,20 +204,10 @@ DEFAULT_COLOR = '#ffb5b5'     # Pink (for any missing)
 # 2. Create color, radius, and histogram lists *for the 9-atom vocab*
 druglike_colors_list = []
 druglike_radius_list = []
-druglike_atom_hist_array = np.zeros(DRUGLIKE_VOCAB_SIZE)
-raw_atom_hist = {'C': 1570767, 'N': 273858, 'O': 396837, 'S': 26352, 'B': 0, 
-                 'Br': 0, 'Cl': 15058, 'P': 25994, 'I': 0, 'F': 30687}
-
+druglike_atom_hist_array = np.array([0.58447313, 0.09319977, 0.28838374, 0.00662685, 0.02323252, 0.00200347, 0.00138702, 0.00023117, 0.00046234])
 for i, atom_symbol in enumerate(DRUGLIKE_ATOMS_DECODER):
     druglike_colors_list.append(atom_colors.get(atom_symbol, DEFAULT_COLOR))
     druglike_radius_list.append(0.3) # Default radius
-    
-    # Get histogram count
-    count = raw_atom_hist.get(atom_symbol, 0)
-    if count == 0:
-        print(f"Warning: Atom '{atom_symbol}' has 0 count in raw_atom_hist.")
-    druglike_atom_hist_array[i] = count
-
 # 3. Create the new 9x9 bond matrices
 #    (This uses your 'build_matrix' helper function and 'bonds1' raw dict)
 druglike_bonds1_matrix = build_matrix(bonds1, DRUGLIKE_ATOMS_DECODER)
