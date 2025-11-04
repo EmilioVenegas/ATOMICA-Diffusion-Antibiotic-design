@@ -273,7 +273,7 @@ class LigandPocketDDPM(pl.LightningModule):
         # STABILITY FIX: Add a learning rate scheduler with warmup
         # Using a simple warmup and then plateau scheduler
         scheduler = ReduceLROnPlateau(
-            optimizer, 'min', factor=0.8, patience=10, verbose=True
+            optimizer, 'min', factor=0.8, patience=20, verbose=True
         )
         return {
             "optimizer": optimizer,
@@ -441,6 +441,7 @@ class LigandPocketDDPM(pl.LightningModule):
         dist = torch.sum((atom_x[edges[0]] - atom_x[edges[1]])**2, dim=1)
         # Add a small epsilon to the squared distance to prevent division by zero
         r = torch.sqrt(dist + 1e-6)
+        r = torch.clamp(r, min=0.1) # Set minimum distance of 0.1 Angstrom
         
         # Get optimal radii
         lennard_jones_radii = torch.tensor(self.lj_rm, device=r.device)
@@ -460,13 +461,14 @@ class LigandPocketDDPM(pl.LightningModule):
                                  atom_type_idx[edges[1]]]
         sigma = 2 ** (-1 / 6) * rm
         out = 4 * ((sigma / r) ** 12 - (sigma / r) ** 6)
-
-        if self.clamp_lj is not None:
-            out = torch.clamp(out, min=None, max=self.clamp_lj)
+       
 
         # Compute potential per atom
         out = scatter_add(out, edges[0], dim=0, dim_size=len(atom_x))
 
+        if self.clamp_lj is not None:
+            out = torch.clamp(out, min=None, max=self.clamp_lj)
+        
         # Sum potentials of all atoms
         return scatter_add(out, batch_mask, dim=0)
 
