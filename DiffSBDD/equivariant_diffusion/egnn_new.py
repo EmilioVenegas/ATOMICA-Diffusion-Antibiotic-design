@@ -167,19 +167,23 @@ class EquivariantBlock(nn.Module):
                 edge_attr=None, update_coords_mask=None, batch_mask=None):
         # Edit Emiel: Remove velocity as input
         distances, coord_diff = coord2diff(x, edge_index, self.norm_constant)
+
+        # --- THIS IS THE CRITICAL BLOCK THAT MUST BE ADDED ---
         if self.reflection_equiv:
             coord_cross = None
         else:
             coord_cross = coord2cross(x, edge_index, batch_mask,
-                                      self.norm_constant)
+                                    self.norm_constant)
+        # --- END CRITICAL BLOCK ---
+
         if self.sin_embedding is not None:
             distances = self.sin_embedding(distances)
         edge_attr = torch.cat([distances, edge_attr], dim=1)
         for i in range(0, self.n_layers):
             h, _ = self._modules["gcl_%d" % i](h, edge_index, edge_attr=edge_attr,
-                                               node_mask=node_mask, edge_mask=edge_mask)
+                                            node_mask=node_mask, edge_mask=edge_mask)
         x = self._modules["gcl_equiv"](h, x, edge_index, coord_diff, coord_cross, edge_attr,
-                                       node_mask, edge_mask, update_coords_mask=update_coords_mask)
+                                    node_mask, edge_mask, update_coords_mask=update_coords_mask)
 
         # Important, the bias of the last linear might be non-zero
         if node_mask is not None:
@@ -229,6 +233,11 @@ class EGNN(nn.Module):
                 batch_mask=None, edge_attr=None):
         # Edit Emiel: Remove velocity as input
         edge_feat, _ = coord2diff(x, edge_index)
+        if self.reflection_equiv:
+            coord_cross = None
+        else:
+            coord_cross = coord2cross(x, edge_index, batch_mask,
+                                  self.norm_constant)
         if self.sin_embedding is not None:
             edge_feat = self.sin_embedding(edge_feat)
         if edge_attr is not None:
