@@ -168,13 +168,11 @@ class EquivariantBlock(nn.Module):
         # Edit Emiel: Remove velocity as input
         distances, coord_diff = coord2diff(x, edge_index, self.norm_constant)
 
-        # --- THIS IS THE CRITICAL BLOCK THAT MUST BE ADDED ---
         if self.reflection_equiv:
             coord_cross = None
         else:
             coord_cross = coord2cross(x, edge_index, batch_mask,
                                     self.norm_constant)
-        # --- END CRITICAL BLOCK ---
 
         if self.sin_embedding is not None:
             distances = self.sin_embedding(distances)
