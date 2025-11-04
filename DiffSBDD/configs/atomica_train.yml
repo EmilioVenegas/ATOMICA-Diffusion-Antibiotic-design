@@ -1,4 +1,4 @@
-run_name: '128h-nocutoff-v6' # New run name
+run_name: '128h-nocutoff-v16' # New run name
 logdir: './my_logs'
 wandb_params:
   mode: 'disabled'
@@ -14,7 +14,7 @@ num_sanity_val_steps: 0
 mode: 'pocket_conditioning'
 pocket_representation: 'atomica'
 batch_size: 2
-lr: 5.0e-5 # Slightly higher LR, relying on scheduler
+lr: 5.0e-6 # Slightly lower LR, relying on scheduler
 noise_factor: 1.0
 n_epochs: 1000
 num_workers: 8
@@ -25,11 +25,11 @@ augment_rotation: False
 
 augment_noise: 1.0e-4 # Reduced jitter
 accumulate_grad_batches: 8
-gradient_clip_val: 0.5 # More aggressive gradient clipping
+gradient_clip_val: 0.5 #  aggressive gradient clipping
 
-auxiliary_loss: False
+auxiliary_loss: True
 loss_params:
-  max_weight: 0.01
+  max_weight: 0.2
   schedule: 'linear'
   clamp_lj: 1.0
 
@@ -58,7 +58,7 @@ diffusion_params:
   diffusion_noise_schedule: 'polynomial_2'
   diffusion_noise_precision: 1.0e-4 # Slightly higher precision
   diffusion_loss_type: 'l2'
-  normalize_factors: [1.0, 5.0] 
+  normalize_factors: [1.0, 4.0] 
 
 eval_epochs: 50
 visualize_sample_epoch: 50
