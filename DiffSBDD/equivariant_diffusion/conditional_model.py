@@ -219,7 +219,7 @@ class ConditionalDDPM(EnVariationalDiffusion):
         return -self.subspace_dimensionality(num_nodes) * \
                np.log(self.norm_values[0])
 
-    def forward(self, ligand, pocket, return_info=False):
+    def forward(self, ligand, pocket, return_info=False, return_loss_terms=False):
         """
         Computes the loss and NLL terms
         """
@@ -347,6 +347,11 @@ class ConditionalDDPM(EnVariationalDiffusion):
                       loss_0_x_ligand, torch.tensor(0.0), loss_0_h,
                       neg_log_constants, kl_prior, log_pN,
                       t_int.squeeze(), xh_lig_hat)
+        if return_loss_terms:
+            # Return everything needed by the new lightning_module.forward
+            return (*loss_terms, info, eps_t_lig, net_out_lig)
+        
+            
         return (*loss_terms, info) if return_info else loss_terms
     
     def partially_noised_ligand(self, ligand, pocket, noising_steps):
@@ -458,8 +463,8 @@ class ConditionalDDPM(EnVariationalDiffusion):
         sigma2_t_given_s, sigma_t_given_s, alpha_t_given_s = \
             self.sigma_and_alpha_t_given_s(gamma_t, gamma_s, zt_lig)
 
-        sigma_s = self.sigma(gamma_s, target_tensor=zt_lig)
         sigma_t = self.sigma(gamma_t, target_tensor=zt_lig)
+        sigma_s = self.sigma(gamma_s, target_tensor=zt_lig)
 
         # Neural net prediction.
         eps_t_lig, _ = self.dynamics(
@@ -470,20 +475,18 @@ class ConditionalDDPM(EnVariationalDiffusion):
         x0_pred_lig = self.xh_given_zt_and_epsilon(zt_lig, eps_t_lig, gamma_t, ligand_mask)
 
         # 2. Clip the coordinates and features to a reasonable range.
-        #    This is the most critical step for sampling stability.
-        x0_pred_lig[:, :self.n_dims] = torch.clamp(x0_pred_lig[:, :self.n_dims], min=-5, max=5)
-        x0_pred_lig[:, self.n_dims:] = torch.clamp(x0_pred_lig[:, self.n_dims:], min=-3, max=3)
+        x_pred_clipped = torch.clamp(x0_pred_lig[:, :self.n_dims], min=-5, max=5)
+        h_pred_clipped = torch.clamp(x0_pred_lig[:, self.n_dims:], min=-3, max=3)
+        x0_pred_lig_clipped = torch.cat([x_pred_clipped, h_pred_clipped], dim=-1)
 
         # 3. Recalculate epsilon from the clipped x0.
-        #    This ensures the update is based on a stable prediction.
         alpha_t = self.alpha(gamma_t, zt_lig)
-        sigma_t_uninflated = self.sigma(gamma_t, zt_lig)
-        eps_t_lig_clipped = (alpha_t[ligand_mask] * x0_pred_lig - zt_lig) / -sigma_t_uninflated[ligand_mask]
+        eps_t_lig_clipped = (zt_lig - alpha_t[ligand_mask] * x0_pred_lig_clipped) / sigma_t[ligand_mask]
 
         # Compute mu for p(zs | zt) using the clipped epsilon.
         mu_lig = zt_lig / alpha_t_given_s[ligand_mask] - \
                  (sigma2_t_given_s / alpha_t_given_s / sigma_t)[ligand_mask] * \
-                 eps_t_lig_clipped # Use the clipped epsilon here
+                 eps_t_lig_clipped
 
         # Compute sigma for p(zs | zt).
         sigma = sigma_t_given_s * sigma_s / sigma_t
@@ -491,9 +494,6 @@ class ConditionalDDPM(EnVariationalDiffusion):
         # Sample zs given the parameters derived from zt.
         zs_lig, xh0_pocket = self.sample_normal_zero_com(
             mu_lig, xh0_pocket, sigma, ligand_mask, pocket_mask, fix_noise)
-
-        # This assertion is good for debugging but can be commented out
-        # self.assert_mean_zero_with_mask(zt_lig[:, :self.n_dims], ligand_mask)
 
         return zs_lig, xh0_pocket
 
