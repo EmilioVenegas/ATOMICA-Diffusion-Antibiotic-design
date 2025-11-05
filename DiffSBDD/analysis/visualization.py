@@ -98,63 +98,121 @@ def draw_sphere(ax, x, y, z, size, color, alpha):
 
 
 def plot_molecule(ax, positions, atom_type, alpha, spheres_3d, hex_bg_color,
-                  dataset_info):
+                  dataset_info, override_color=None):
     
-    colors_dic = np.array(dataset_info['colors_dic'])
-    radius_dic = np.array(dataset_info['radius_dic'])
-    area_dic = 1500 * radius_dic ** 2
-
     # --- SAFETY FIX ---
     # Clip the atom types to be within the valid range of our data arrays
-    max_atom_index = len(colors_dic) - 1
+    max_atom_index = len(dataset_info['radius_dic']) - 1
     safe_atom_type = np.clip(atom_type, 0, max_atom_index)
     
-    # Use the "safe" atom types for indexing
+    radius_dic = np.array(dataset_info['radius_dic'])
+    area_dic = 1500 * radius_dic ** 2
+    radii = radius_dic[safe_atom_type]
     areas = area_dic[safe_atom_type]
-    colors = colors_dic[safe_atom_type]
-    # draw_sphere(ax, 0, 0, 0, 1)
-    # draw_sphere(ax, 1, 1, 1, 1)
+
+    # --- COLOR OVERRIDE LOGIC ---
+    if override_color:
+        colors = [override_color] * len(positions)
+    else:
+        colors_dic = np.array(dataset_info['colors_dic'])
+        safe_color_atom_type = np.clip(atom_type, 0, len(colors_dic) - 1)
+        colors = colors_dic[safe_color_atom_type]
+    # --- END COLOR OVERRIDE LOGIC ---
 
     x = positions[:, 0]
     y = positions[:, 1]
     z = positions[:, 2]
-    
-    areas = area_dic[atom_type]
-    radii = radius_dic[atom_type]
-    colors = colors_dic[atom_type]
 
     if spheres_3d:
         for i, j, k, s, c in zip(x, y, z, radii, colors):
             draw_sphere(ax, i.item(), j.item(), k.item(), 0.7 * s, c, alpha)
     else:
         ax.scatter(x, y, z, s=areas, alpha=0.9 * alpha,
-                   c=colors)  # , linewidths=2, edgecolors='#FFFFFF')
+                   c=colors)
 
     for i in range(len(x)):
         for j in range(i + 1, len(x)):
             p1 = np.array([x[i], y[i], z[i]])
             p2 = np.array([x[j], y[j], z[j]])
             dist = np.sqrt(np.sum((p1 - p2) ** 2))
-            atom1, atom2 = dataset_info['atom_decoder'][atom_type[i]], \
-                           dataset_info['atom_decoder'][atom_type[j]]
-            s = (atom_type[i], atom_type[j])
-
-            draw_edge_int = get_bond_order(dataset_info['atom_decoder'][s[0]],
-                                           dataset_info['atom_decoder'][s[1]],
-                                           dist)
+            
+            # Ensure atom types are valid before decoding
+            atom1_idx = np.clip(atom_type[i], 0, len(dataset_info['atom_decoder']) - 1)
+            atom2_idx = np.clip(atom_type[j], 0, len(dataset_info['atom_decoder']) - 1)
+            
+            atom1 = dataset_info['atom_decoder'][atom1_idx]
+            atom2 = dataset_info['atom_decoder'][atom2_idx]
+            
+            draw_edge_int = get_bond_order(atom1, atom2, dist)
             line_width = 2
 
             draw_edge = draw_edge_int > 0
             if draw_edge:
-                if draw_edge_int == 4:
-                    linewidth_factor = 1.5
-                else:
-                    # linewidth_factor = draw_edge_int  # Prop to number of
-                    # edges.
-                    linewidth_factor = 1
+                linewidth_factor = 1.5 if draw_edge_int == 4 else 1
                 ax.plot([x[i], x[j]], [y[i], y[j]], [z[i], z[j]],
                         linewidth=line_width * linewidth_factor,
                         c=hex_bg_color, alpha=alpha)
+
+
+def plot_molecule_and_pocket(
+    positions_lig, atom_type_lig, positions_pocket, atom_type_pocket,
+    dataset_info, camera_elev=0, camera_azim=0, save_path=None,
+    spheres_3d=False, bg='black'):
+    
+    black = (0, 0, 0)
+    white = (1, 1, 1)
+    
+    from mpl_toolkits.mplot3d import Axes3D
+    fig = plt.figure()
+    ax = fig.add_subplot(projection='3d')
+    ax.set_aspect('auto')
+    ax.view_init(elev=camera_elev, azim=camera_azim)
+    
+    if bg == 'black':
+        ax.set_facecolor(black)
+        ax.xaxis.line.set_color("black")
+        ligand_bond_color = '#FFFFFF'
+    else:
+        ax.set_facecolor(white)
+        ax.xaxis.line.set_color("white")
+        ligand_bond_color = '#666666'
+
+    ax.xaxis.pane.set_alpha(0)
+    ax.yaxis.pane.set_alpha(0)
+    ax.zaxis.pane.set_alpha(0)
+    ax._axis3don = False
+
+    # 1. Plot the pocket first with gray colors and lower alpha
+    pocket_color = '#808080' # Gray
+    plot_molecule(ax, positions_pocket, atom_type_pocket, alpha=0.4,
+                  spheres_3d=spheres_3d, hex_bg_color=pocket_color,
+                  dataset_info=dataset_info, override_color=pocket_color)
+
+    # 2. Plot the ligand on top with its original colors
+    plot_molecule(ax, positions_lig, atom_type_lig, alpha=1.0,
+                  spheres_3d=spheres_3d, hex_bg_color=ligand_bond_color,
+                  dataset_info=dataset_info, override_color=None)
+
+    # Set axis limits based on the combined system
+    all_positions = torch.cat([positions_lig, positions_pocket], dim=0)
+    max_value = all_positions.abs().max().item()
+    axis_lim = min(40, max(max_value / 1.5 + 0.3, 3.2))
+    ax.set_xlim(-axis_lim, axis_lim)
+    ax.set_ylim(-axis_lim, axis_lim)
+    ax.set_zlim(-axis_lim, axis_lim)
+
+    dpi = 120 if spheres_3d else 50
+
+    if save_path is not None:
+        plt.savefig(save_path, bbox_inches='tight', pad_inches=0.0, dpi=dpi)
+        if spheres_3d:
+            img = imageio.imread(save_path)
+            img_brighter = np.clip(img * 1.4, 0, 255).astype('uint8')
+            imageio.imsave(save_path, img_brighter)
+    else:
+        plt.show()
+    plt.close()
+
 
 
 def plot_data3d(positions, atom_type, dataset_info, camera_elev=0,
