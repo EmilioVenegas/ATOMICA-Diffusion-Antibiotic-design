@@ -1,11 +1,11 @@
-run_name: 'centered-refactored-v1' # New run name
+run_name: 'pull-push-2Dhist-v11' # New run name
 logdir: './my_logs'
 wandb_params:
   mode: 'disabled'
   entity: 'my_username'
   group: 'atomica'
 dataset: 'atomica_PL'
-datadir: data/processed_atomica_centered/
+datadir: data/processed_atomica_filtered/
 atomica_model_config: ATOMICA/pretrain/pretrain_model_config.json
 atomica_model_weights: ATOMICA/pretrain/pretrain_model_weights.pt
 enable_progress_bar: True
@@ -24,16 +24,27 @@ clip_grad: True
 augment_rotation: False
 warmup_steps: 500
 
+
 augment_noise: 1.0e-4 # Reduced jitter
 accumulate_grad_batches: 8
-gradient_clip_algorithm: 'value'
-gradient_clip_val: 1.0 #  aggressive gradient clipping
+gradient_clip_algorithm: 'norm'
+gradient_clip_val: 5.0 #  Relaxed
+
+# parameter to prioritize geometry
+coord_loss_weight: 10.0
 
 auxiliary_loss: True
 loss_params:
-  max_weight: 0.01
+  max_weight: 2.0
   schedule: 'linear'
   clamp_lj: 10.0
+
+bond_params:
+  enabled: True
+  max_weight: 2.0     # A strong signal to force bonds
+  target_length: 1.55  # Average covalent bond length in Angstroms
+  cutoff_radius: 4   # Apply the loss to any pair of atoms closer than 3.0 A
+  clamp_b: 10.0       # Clamp the bond potential to avoid huge losses
 
 egnn_params:
   #context_nf: 512
@@ -45,10 +56,10 @@ egnn_params:
   atomica_embed_dim: 32
   #joint_nf: 128
   hidden_nf: 128
-  n_layers: 4
+  n_layers: 6
   attention: True
-  tanh: True  
-  coords_range: 15.0
+  tanh: False  
+  coords_range: 20.0
   norm_constant: 1.0 # Ensure this is a float
   inv_sublayers: 1
   sin_embedding: False
@@ -61,7 +72,7 @@ diffusion_params:
   diffusion_noise_schedule: 'polynomial_2'
   diffusion_noise_precision: 1.0e-4 # Slightly higher precision
   diffusion_loss_type: 'l2'
-  normalize_factors: [5.0, 1.0] 
+  normalize_factors: [1.0, 1.0] 
 
 eval_epochs: 50
 visualize_sample_epoch: 50
