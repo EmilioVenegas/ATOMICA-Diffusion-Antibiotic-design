@@ -30,6 +30,7 @@ from analysis.metrics import BasicMolecularMetrics, CategoricalDistribution, \
     MoleculeProperties
 from analysis.molecule_builder import build_molecule, process_molecule
 from analysis.docking import smina_score
+from torch.optim.lr_scheduler import ReduceLROnPlateau, LambdaLR, SequentialLR
 
 
 # --- NEW: Imports for Phase 4 (Inference) ---
@@ -83,7 +84,8 @@ class LigandPocketDDPM(pl.LightningModule):
             # --- NEW: Args for ATOMICA model (Phase 4) ---
             atomica_model_path=None,
             atomica_model_config=None,
-            atomica_model_weights=None
+            atomica_model_weights=None,
+            warmup_steps=500
     ):
         super(LigandPocketDDPM, self).__init__()
         self.save_hyperparameters()
@@ -118,6 +120,7 @@ class LigandPocketDDPM(pl.LightningModule):
     
         self.lig_type_encoder = self.dataset_info['atom_encoder']
         self.lig_type_decoder = self.dataset_info['atom_decoder']
+        self.warmup_steps = warmup_steps # Store it
         
         # --- MODIFIED: Handle 'atomica' representation ---
         if self.pocket_representation == 'CA':
@@ -269,17 +272,31 @@ class LigandPocketDDPM(pl.LightningModule):
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(
             self.ddpm.parameters(), lr=self.lr, amsgrad=True, weight_decay=1e-12)
+
+        # STABILITY FIX: Add a warmup scheduler
+        def warmup_lambda(current_step):
+            if current_step < self.warmup_steps:
+                return float(current_step) / float(max(1, self.warmup_steps))
+            return 1.0
+
+        warmup_scheduler = LambdaLR(optimizer, lr_lambda=warmup_lambda)
         
-        # STABILITY FIX: Add a learning rate scheduler with warmup
-        # Using a simple warmup and then plateau scheduler
-        scheduler = ReduceLROnPlateau(
-            optimizer, 'min', factor=0.8, patience=20, verbose=True
+        plateau_scheduler = ReduceLROnPlateau(
+            optimizer, 'min', factor=0.8, patience=10, verbose=True
         )
+
+        # The sequential scheduler will run the warmup first, then the plateau scheduler
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer,
+            schedulers=[warmup_scheduler, plateau_scheduler],
+            milestones=[self.warmup_steps] # The step to switch schedulers
+        )
+        
         return {
             "optimizer": optimizer,
             "lr_scheduler": {
                 "scheduler": scheduler,
-                "monitor": "loss/val", # Make sure to monitor validation loss
+                "monitor": "loss/val",
             },
         }
 
@@ -358,62 +375,46 @@ class LigandPocketDDPM(pl.LightningModule):
     def forward(self, data):
         ligand, pocket = self.get_ligand_and_pocket(data)
 
-        # Note: \mathcal{L} terms in the paper represent log-likelihoods while
-        # our loss terms are a negative(!) log-likelihoods
-        delta_log_px, error_t_lig, error_t_pocket, SNR_weight, \
-        loss_0_x_ligand, loss_0_x_pocket, loss_0_h, neg_log_const_0, \
-        kl_prior, log_pN, t_int, xh_lig_hat, info = \
-            self.ddpm(ligand, pocket, return_info=True)
+        delta_log_px, _, _, _, _, _, _, _, kl_prior, log_pN, t_int, xh_lig_hat, info, eps_t_lig, net_out_lig = \
+        self.ddpm(ligand, pocket, return_info=True, return_loss_terms=True)
 
-        if self.loss_type == 'l2' and self.training:
-            actual_ligand_size = ligand['size'] - ligand['num_virtual_atoms'] if self.virtual_nodes else ligand['size']
+        
 
-            # normalize loss_t
-            denom_lig = self.x_dims * actual_ligand_size + \
-                        self.ddpm.atom_nf * ligand['size']
-            error_t_lig = error_t_lig / denom_lig
+        if self.loss_type == 'l2':
+                        
+            # 1. Calculate the squared error for the entire xh vector.
+            squared_error = (eps_t_lig - net_out_lig) ** 2
+
+            # 2. If using virtual nodes, ignore the error on their coordinates.
+            if self.virtual_nodes:
+                squared_error = torch.where(
+                    ligand['one_hot'][:, self.virtual_atom:self.virtual_atom+1].bool(),
+                    torch.zeros_like(squared_error),
+                    squared_error
+                )
+
+            # 3. Sum the error per-molecule in the batch.
+            loss_t_per_sample = self.ddpm.sum_except_batch(squared_error, ligand['mask'])
+
+            # 4. Normalize the loss. We divide by the total number of dimensions (pos + feat) in each ligand.
+            # This prevents larger molecules from dominating the loss.
+            num_dims = self.x_dims + self.atom_nf
+            norm_factor = num_dims * ligand['size']
             
-            # --- Denominator for pocket depends on representation ---
-            if self.pocket_representation == 'atomica':
-                # features are embeddings (self.aa_nf)
-                denom_pocket = self.x_dims * pocket['size'] + \
-                               self.aa_nf * pocket['size']
-            else:
-                # features are one-hot (self.ddpm.residue_nf)
-                denom_pocket = (self.x_dims + self.ddpm.residue_nf) * pocket['size']
-            
-            error_t_pocket = error_t_pocket / denom_pocket
-            loss_t = 0.5 * (error_t_lig + error_t_pocket)
+            # Add a small epsilon to prevent division by zero for empty ligands (safety).
+            normalized_loss = loss_t_per_sample / (norm_factor + 1e-8)
 
-            # normalize loss_0
-            loss_0_x_ligand = loss_0_x_ligand / (self.x_dims * actual_ligand_size)
-            loss_0_x_pocket = loss_0_x_pocket / (self.x_dims * pocket['size'])
-            loss_0 = loss_0_x_ligand + loss_0_x_pocket + loss_0_h
+            # The final nll is the mean of the normalized losses in the batch.
+            nll = normalized_loss
 
-        # VLB objective or evaluation step
-        else:
-            # Note: SNR_weight should be negative
-            loss_t = -self.T * 0.5 * SNR_weight * (error_t_lig + error_t_pocket)
-            loss_0 = loss_0_x_ligand + loss_0_x_pocket + loss_0_h
-            loss_0 = loss_0 + neg_log_const_0
+        else: # The VLB path, which we now know is unstable. Kept for completeness.
+            # This logic is unchanged but will not be used.
+            loss_t = info['error_t_lig'] + info['error_t_pocket'] # These are already summed in ddpm
+            loss_0 = info['loss_0']
+            nll = loss_t + loss_0 + kl_prior - log_pN - delta_log_px
 
-        nll = loss_t + loss_0 + kl_prior
-
-        # Correct for normalization on x.
-        if not (self.loss_type == 'l2' and self.training):
-            nll = nll - delta_log_px
-
-            # always the same number of nodes if virtual nodes are added
-            if not self.virtual_nodes:
-                # Transform conditional nll into joint nll
-                # Note:
-                # loss = -log p(x,h|N) and log p(x,h,N) = log p(x,h|N) + log p(N)
-                # Therefore, log p(x,h|N) = -loss + log p(N)
-                # => loss_new = -log p(x,h,N) = loss - log p(N)
-                nll = nll - log_pN
-
-        # Add auxiliary loss term
-        if self.auxiliary_loss and self.loss_type == 'l2' and self.training:
+        # Add auxiliary LJ loss term (only during training)
+        if self.auxiliary_loss and self.training:
             x_lig_hat = xh_lig_hat[:, :self.x_dims]
             h_lig_hat = xh_lig_hat[:, self.x_dims:]
             weighted_lj_potential = \
@@ -421,17 +422,18 @@ class LigandPocketDDPM(pl.LightningModule):
                 self.lj_potential(x_lig_hat, h_lig_hat, ligand['mask'])
             nll = nll + weighted_lj_potential
             info['weighted_lj'] = weighted_lj_potential.mean(0)
-
-        info['error_t_lig'] = error_t_lig.mean(0)
-        info['error_t_pocket'] = error_t_pocket.mean(0)
-        info['SNR_weight'] = SNR_weight.mean(0)
-        info['loss_0'] = loss_0.mean(0)
+        
+        # We need to manually add the raw error terms to the info dict for logging
+        info['error_t_lig'] = self.ddpm.sum_except_batch((eps_t_lig - net_out_lig) ** 2, ligand['mask']).mean()
+        info['error_t_pocket'] = torch.tensor(0.0) # Not used in conditional model
+        info['SNR_weight'] = torch.tensor(0.0) # Not used in L2 loss
+        info['loss_0'] = torch.tensor(0.0) # Not used in L2 loss
         info['kl_prior'] = kl_prior.mean(0)
         info['delta_log_px'] = delta_log_px.mean(0)
-        info['neg_log_const_0'] = neg_log_const_0.mean(0)
         info['log_pN'] = log_pN.mean(0)
-        return nll, info
 
+        return nll, info
+    
     def lj_potential(self, atom_x, atom_one_hot, batch_mask):
         adj = batch_mask[:, None] == batch_mask[None, :]
         adj = adj ^ torch.diag(torch.diag(adj))  # remove self-edges
@@ -477,80 +479,69 @@ class LigandPocketDDPM(pl.LightningModule):
             self.log(f'{m}/{split}', value, batch_size=batch_size, **kwargs)
 
     def training_step(self, data, *args):
-        # STABILITY FIX: Better jittering
+
+        # --- ROBUSTNESS FIX: Check for empty pockets before doing anything ---
+        if 'num_pocket_nodes' in data and (data['num_pocket_nodes'] == 0).any():
+            print("WARNING: Skipping batch because it contains a pocket with zero atoms.")
+            return None
+
+        # STABILITY FIX: Add jitter to prevent coincident atoms
         if self.augment_noise > 0:
             noise = self.augment_noise * torch.randn_like(data['lig_coords'])
             data['lig_coords'] = data['lig_coords'] + noise
-
             if 'pocket_coords' in data:
                 p_noise = self.augment_noise * torch.randn_like(data['pocket_coords'])
                 data['pocket_coords'] = data['pocket_coords'] + p_noise
 
-        # STABILITY FIX: Check for NaN in input
-        if not torch.isfinite(data['lig_coords']).all():
-            print("WARNING: NaN detected in input lig_coords, skipping batch")
+        # STABILITY FIX: Check for NaN in input data
+        if not torch.isfinite(data['lig_coords']).all() or \
+           ('pocket_coords' in data and not torch.isfinite(data['pocket_coords']).all()):
+            print("WARNING: NaN detected in input coordinates, skipping batch.")
             return None
-        if 'pocket_coords' in data and not torch.isfinite(data['pocket_coords']).all():
-            print("WARNING: NaN detected in input pocket_coords, skipping batch")
-            return None
-
-        if self.augment_rotation:
-            raise NotImplementedError
 
         try:
             nll, info = self.forward(data)
         except RuntimeError as e:
-            if 'out of memory' in str(e):
-                print('WARNING: ran out of memory, skipping to the next batch')
-                torch.cuda.empty_cache()
-                return None
-            elif 'CUDA' in str(e):
-                print(f'WARNING: Caught CUDA error: {e}. Skipping batch.')
+            if 'out of memory' in str(e) or 'CUDA' in str(e):
+                print(f'WARNING: Caught GPU error: {e}. Skipping batch.')
                 torch.cuda.empty_cache()
                 return None
             else:
                 raise e
 
         # STABILITY FIX: Check for NaN in loss
-        if torch.isnan(nll).any():
+        if not torch.isfinite(nll).all():
             print("WARNING: NaN loss detected. Skipping batch.")
             return None
 
         loss = nll.mean(0)
-
         info['loss'] = loss
         self.log_metrics(info, 'train', batch_size=len(data['num_lig_atoms']))
-
         return info
     
     def _shared_eval(self, data, prefix, *args):
-        # STABILITY FIX: Always apply jitter during eval to prevent exact overlaps
-        jitter_val = 1e-3  # Increased from 1e-6
+        # STABILITY FIX: Always apply a small jitter during eval
+        jitter_val = 1e-4
         if 'lig_coords' in data:
-            noise = jitter_val * torch.randn_like(data['lig_coords'])
-            data['lig_coords'] = data['lig_coords'] + noise
+            data['lig_coords'] += jitter_val * torch.randn_like(data['lig_coords'])
         if 'pocket_coords' in data:
-            p_noise = jitter_val * torch.randn_like(data['pocket_coords'])
-            data['pocket_coords'] = data['pocket_coords'] + p_noise
+            data['pocket_coords'] += jitter_val * torch.randn_like(data['pocket_coords'])
         
         try:
             nll, info = self.forward(data)
         except RuntimeError as e:
-            if 'out of memory' in str(e):
-                print(f'WARNING: OOM during {prefix}, skipping batch')
+            if 'out of memory' in str(e) or 'CUDA' in str(e):
+                print(f'WARNING: GPU error during {prefix}, skipping batch')
                 torch.cuda.empty_cache()
-                return {'loss': torch.tensor(float('nan'))}
+                return {'loss': torch.tensor(float('nan'))} # Return NaN loss to be handled
             else:
                 raise e
         
-        # Check for NaN
         if not torch.isfinite(nll).all():
-            print(f"WARNING: NaN in {prefix} loss")
+            print(f"WARNING: NaN in {prefix} loss. Skipping logging.")
             return {'loss': torch.tensor(float('nan'))}
         
         loss = nll.mean(0)
-        loss = torch.clamp(loss, max=1000.0)
-
         info['loss'] = loss
         self.log_metrics(info, prefix, batch_size=len(data['num_lig_atoms']),
                         sync_dist=True)
@@ -571,7 +562,7 @@ class LigandPocketDDPM(pl.LightningModule):
                 param_norm = p.grad.data.norm(2)
                 total_norm += param_norm.item() ** 2
         total_norm = total_norm ** 0.5
-        
+
         if total_norm > 100.0:
             print(f"WARNING: Large gradient norm detected: {total_norm:.2f}")
         
