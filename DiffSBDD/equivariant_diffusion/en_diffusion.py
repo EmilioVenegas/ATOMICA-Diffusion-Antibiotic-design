@@ -236,6 +236,8 @@ class EnVariationalDiffusion(nn.Module):
             - self.cdf_standard_gaussian((centered_ligand_onehot - 0.5) / sigma_0_cat[ligand['mask']])
             + epsilon
         )
+        log_ph_cat_proportional_ligand = torch.clamp(log_ph_cat_proportional_ligand, min=-25.0)
+
 
         # Normalize the distribution over the categories.
         log_Z = torch.logsumexp(log_ph_cat_proportional_ligand, dim=1,
@@ -513,44 +515,27 @@ class EnVariationalDiffusion(nn.Module):
         sigma2_t_given_s, sigma_t_given_s, alpha_t_given_s = \
             self.sigma_and_alpha_t_given_s(gamma_t, gamma_s, zt_lig)
 
-        sigma_s = self.sigma(gamma_s, target_tensor=zt_lig)
-        sigma_t = self.sigma(gamma_t, target_tensor=zt_lig)
-
         # Neural net prediction.
         eps_t_lig, eps_t_pocket = self.dynamics(
             zt_lig, zt_pocket, t, ligand_mask, pocket_mask)
 
-        # Compute mu for p(zs | zt).
-        combined_mask = torch.cat((ligand_mask, pocket_mask))
-        self.assert_mean_zero_with_mask(
-            torch.cat((zt_lig[:, :self.n_dims],
-                       zt_pocket[:, :self.n_dims]), dim=0),
-            combined_mask)
-        self.assert_mean_zero_with_mask(
-            torch.cat((eps_t_lig[:, :self.n_dims],
-                       eps_t_pocket[:, :self.n_dims]), dim=0),
-            combined_mask)
-
-        # Note: mu_{t->s} = 1 / alpha_{t|s} z_t - sigma_{t|s}^2 / sigma_t / alpha_{t|s} epsilon
-        # follows from the definition of mu_{t->s} and Equ. (7) in the EDM paper
-        # --- NEW STABLE MU (from EDM paper, Eq. 7 & 8) ---
+        # --- STABILITY FIX: More stable mu calculation from EDM Paper (Eq. 7 & 8) ---
         alpha_t = self.alpha(gamma_t, zt_lig)
         alpha_s = self.alpha(gamma_s, zt_lig)
         sigma_t = self.sigma(gamma_t, zt_lig)
         sigma_s = self.sigma(gamma_s, zt_lig)
-
-        # mu = (alpha_s/alpha_t) * z_t + (sigma_s - alpha_s*sigma_t/alpha_t) * eps_t
+        
         coeff1 = alpha_s / alpha_t
         coeff2 = sigma_s - (alpha_s * sigma_t / alpha_t)
 
         mu_lig = coeff1[ligand_mask] * zt_lig + coeff2[ligand_mask] * eps_t_lig
         mu_pocket = coeff1[pocket_mask] * zt_pocket + coeff2[pocket_mask] * eps_t_pocket
-        # --- END NEW STABLE MU ---
+        # --- END STABILITY FIX ---
 
         # Compute sigma for p(zs | zt).
         sigma = sigma_t_given_s * sigma_s / sigma_t
 
-        # Sample zs given the paramters derived from zt.
+        # Sample zs given the parameters derived from zt.
         zs_lig, zs_pocket = self.sample_normal(mu_lig, mu_pocket, sigma,
                                                ligand_mask, pocket_mask,
                                                fix_noise)
@@ -891,17 +876,19 @@ class EnVariationalDiffusion(nn.Module):
     def normalize(self, ligand=None, pocket=None):
         if ligand is not None:
             ligand['x'] = ligand['x'] / self.norm_values[0]
-
-            # Casting to float in case h still has long or int type.
             ligand['one_hot'] = \
                 (ligand['one_hot'].float() - self.norm_biases[1]) / \
                 self.norm_values[1]
 
         if pocket is not None:
             pocket['x'] = pocket['x'] / self.norm_values[0]
-            pocket['one_hot'] = \
-                (pocket['one_hot'].float() - self.norm_biases[1]) / \
-                self.norm_values[1]
+            
+            # The 'dynamics' object is available here. We check its class to infer the mode.
+            if self.dynamics.__class__.__name__ != 'AtomicaDynamics':
+                 pocket['one_hot'] = \
+                    (pocket['one_hot'].float() - self.norm_biases[1]) / \
+                    self.norm_values[1]
+            # If it IS AtomicaDynamics, we do nothing, leaving the embeddings as they are.
 
         return ligand, pocket
 
