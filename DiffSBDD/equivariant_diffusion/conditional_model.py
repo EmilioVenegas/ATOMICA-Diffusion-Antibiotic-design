@@ -530,7 +530,8 @@ class ConditionalDDPM(EnVariationalDiffusion):
         xh0_pocket = torch.cat([pocket['x'], pocket['one_hot']], dim=1)
         
         if isinstance(num_nodes_lig, int):
-            num_nodes_lig = [num_nodes_lig] * n_samples
+            # Create a torch.Tensor directly, not a Python list.
+            num_nodes_lig = torch.full((n_samples,), fill_value=num_nodes_lig, device=device)
 
         lig_mask = utils.num_nodes_to_batch_mask(
             n_samples, num_nodes_lig, device)

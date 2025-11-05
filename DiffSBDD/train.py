@@ -50,8 +50,8 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument('--config', type=str, required=True)
     p.add_argument('--resume', type=str, default=None)
-    p.add_argument('--virtual_nodes', action='store_true',
-                   help='Use virtual nodes (default: False)')
+    p.add_argument('--virtual_nodes', action='store_true', default=False,
+                   help='Use virtual nodes (default: True)')
     args = p.parse_args()
 
     with open(args.config, 'r') as f:
