@@ -85,10 +85,15 @@ class LigandPocketDDPM(pl.LightningModule):
             atomica_model_path=None,
             atomica_model_config=None,
             atomica_model_weights=None,
-            warmup_steps=500
+            warmup_steps=500,
+            bond_params: Optional[Namespace] = None,
+            coord_loss_weight: float = 1.0,
+            **kwargs # Add kwargs to catch any other stray arguments
+            
     ):
         super(LigandPocketDDPM, self).__init__()
         self.save_hyperparameters()
+        
 
         ddpm_models = {'joint': EnVariationalDiffusion,
                        'pocket_conditioning': ConditionalDDPM,
@@ -376,63 +381,103 @@ class LigandPocketDDPM(pl.LightningModule):
         ligand, pocket = self.get_ligand_and_pocket(data)
 
         delta_log_px, _, _, _, _, _, _, _, kl_prior, log_pN, t_int, xh_lig_hat, info, eps_t_lig, net_out_lig = \
-        self.ddpm(ligand, pocket, return_info=True, return_loss_terms=True)
-
-        
+            self.ddpm(ligand, pocket, return_info=True, return_loss_terms=True)
 
         if self.loss_type == 'l2':
-                        
-            # 1. Calculate the squared error for the entire xh vector.
-            squared_error = (eps_t_lig - net_out_lig) ** 2
+            # --- THE WEIGHTED L2 LOSS FIX ---
+            # Separate the error into coordinate and feature components
+            error = eps_t_lig - net_out_lig
+            coord_error = error[:, :self.x_dims]**2
+            feat_error = error[:, self.x_dims:]**2
 
-            # 2. If using virtual nodes, ignore the error on their coordinates.
+            # Apply the coordinate weight
+            coord_loss_weight = self.hparams.coord_loss_weight if hasattr(self.hparams, 'coord_loss_weight') else 1.0
+            weighted_coord_error = coord_loss_weight * coord_error
+
+            # Recombine into a single error tensor
+            squared_error = torch.cat([weighted_coord_error, feat_error], dim=1)
+            # --- END FIX ---
+
             if self.virtual_nodes:
-                squared_error = torch.where(
+                squared_error[:, :self.x_dims] = torch.where(
                     ligand['one_hot'][:, self.virtual_atom:self.virtual_atom+1].bool(),
-                    torch.zeros_like(squared_error),
-                    squared_error
+                    torch.zeros_like(squared_error[:, :self.x_dims]),
+                    squared_error[:, :self.x_dims]
                 )
-
-            # 3. Sum the error per-molecule in the batch.
-            loss_t_per_sample = self.ddpm.sum_except_batch(squared_error, ligand['mask'])
-
-            # 4. Normalize the loss. We divide by the total number of dimensions (pos + feat) in each ligand.
-            # This prevents larger molecules from dominating the loss.
-            num_dims = self.x_dims + self.atom_nf
-            norm_factor = num_dims * ligand['size']
             
-            # Add a small epsilon to prevent division by zero for empty ligands (safety).
+            loss_t_per_sample = self.ddpm.sum_except_batch(squared_error, ligand['mask'])
+            
+            # Normalize by the number of dimensions (this is now a weighted normalization)
+            num_feat_dims = self.atom_nf
+            norm_factor = (coord_loss_weight * self.x_dims + num_feat_dims) * ligand['size']
             normalized_loss = loss_t_per_sample / (norm_factor + 1e-8)
-
-            # The final nll is the mean of the normalized losses in the batch.
             nll = normalized_loss
+        else:
+            raise NotImplementedError("Only L2 loss is supported in this stable version.")
 
-        else: # The VLB path, which we now know is unstable. Kept for completeness.
-            # This logic is unchanged but will not be used.
-            loss_t = info['error_t_lig'] + info['error_t_pocket'] # These are already summed in ddpm
-            loss_0 = info['loss_0']
-            nll = loss_t + loss_0 + kl_prior - log_pN - delta_log_px
-
-        # Add auxiliary LJ loss term (only during training)
-        if self.auxiliary_loss and self.training:
-            x_lig_hat = xh_lig_hat[:, :self.x_dims]
-            h_lig_hat = xh_lig_hat[:, self.x_dims:]
-            weighted_lj_potential = \
+        x_lig_hat = xh_lig_hat[:, :self.x_dims]
+        h_lig_hat = xh_lig_hat[:, self.x_dims:]
+            
+        # --- THE HYBRID POTENTIAL FIX ---
+        # 1. Repulsion Loss (from Lennard-Jones)
+        if hasattr(self.hparams, 'auxiliary_loss') and self.hparams.auxiliary_loss and self.training:
+            weighted_lj_repulsion = \
                 self.auxiliary_weight_schedule(t_int.long()) * \
-                self.lj_potential(x_lig_hat, h_lig_hat, ligand['mask'])
-            nll = nll + weighted_lj_potential
-            info['weighted_lj'] = weighted_lj_potential.mean(0)
+                self.lj_potential_repulsive_only(x_lig_hat, h_lig_hat, ligand['mask'])
+            nll = nll + weighted_lj_repulsion
+            info['weighted_lj'] = weighted_lj_repulsion.mean(0)
         
-        # We need to manually add the raw error terms to the info dict for logging
-        info['error_t_lig'] = self.ddpm.sum_except_batch((eps_t_lig - net_out_lig) ** 2, ligand['mask']).mean()
-        info['error_t_pocket'] = torch.tensor(0.0) # Not used in conditional model
-        info['SNR_weight'] = torch.tensor(0.0) # Not used in L2 loss
-        info['loss_0'] = torch.tensor(0.0) # Not used in L2 loss
-        info['kl_prior'] = kl_prior.mean(0)
-        info['delta_log_px'] = delta_log_px.mean(0)
-        info['log_pN'] = log_pN.mean(0)
+        # 2. Bond Attraction Loss (from Harmonic Potential)
+        if hasattr(self.hparams, 'bond_params') and self.hparams.bond_params and self.hparams.bond_params.enabled and self.training:
+            weight = self.hparams.bond_params.max_weight
+            weighted_bond_potential = weight * self.harmonic_bond_potential(x_lig_hat, ligand['mask'])
+            nll = nll + weighted_bond_potential
+            info['bond_potential'] = weighted_bond_potential.mean(0)
+        # --- END FIX ---
 
+        # Fill info dict for logging
+        info['error_t_lig'] = self.ddpm.sum_except_batch((eps_t_lig - net_out_lig) ** 2, ligand['mask']).mean()
+        # ... (rest of info dict setup) ...
         return nll, info
+    
+
+    def lj_potential_repulsive_only(self, atom_x, atom_one_hot, batch_mask):
+        adj = batch_mask[:, None] == batch_mask[None, :]
+        adj = adj ^ torch.diag(torch.diag(adj))  # remove self-edges
+        edges = torch.where(adj)
+
+        # Compute pair-wise potentials
+        dist = torch.sum((atom_x[edges[0]] - atom_x[edges[1]])**2, dim=1)
+        r = torch.sqrt(dist + 1e-8) # Add epsilon for stability
+
+        # Get optimal radii from Lennard-Jones parameters
+        lennard_jones_radii = torch.tensor(self.lj_rm, device=r.device) / 100.0
+        lennard_jones_radii = lennard_jones_radii / self.ddpm.norm_values[0]
+        atom_type_idx = atom_one_hot.argmax(1)
+
+        # Clamp indices to be safe
+        atom_type_idx = torch.clamp(atom_type_idx, 0, len(lennard_jones_radii) - 1)
+             
+        rm = lennard_jones_radii[atom_type_idx[edges[0]], atom_type_idx[edges[1]]]
+        sigma = 2 ** (-1 / 6) * rm
+        
+        
+        # Weeks-Chandler-Andersen (WCA) potential.
+        # It is the LJ potential, shifted up, and set to 0 where it would be attractive.
+        cutoff = 2**(1/6) * rm
+        energy = 4 * ((sigma / r) ** 12 - (sigma / r) ** 6) + 1 # Shifted LJ
+        
+        # Only apply the potential where r < cutoff (i.e., only the repulsive part)
+        repulsive_only_energy = torch.where(r < cutoff, energy, torch.tensor(0.0, device=r.device))
+        out = repulsive_only_energy
+       
+        out = scatter_add(out, edges[0], dim=0, dim_size=len(atom_x))
+        
+        # Clamp the maximum repulsion to prevent explosions from very close atoms
+        if self.clamp_lj is not None:
+            out = torch.clamp(out, min=None, max=self.clamp_lj)
+        
+        return scatter_add(out, batch_mask, dim=0)
     
     def lj_potential(self, atom_x, atom_one_hot, batch_mask):
         adj = batch_mask[:, None] == batch_mask[None, :]
@@ -473,6 +518,39 @@ class LigandPocketDDPM(pl.LightningModule):
         
         # Sum potentials of all atoms
         return scatter_add(out, batch_mask, dim=0)
+    
+    
+    def harmonic_bond_potential(self, atom_x, batch_mask):
+        adj = batch_mask[:, None] == batch_mask[None, :]
+        adj = adj ^ torch.diag(torch.diag(adj))  # remove self-edges
+        edges = torch.where(adj)
+
+        # Get distances in Angstrom space (since normalize_factors[0] is 1.0)
+        dist = torch.sum((atom_x[edges[0]] - atom_x[edges[1]])**2, dim=1)
+        r = torch.sqrt(dist + 1e-8)
+
+        # --- THE HARMONIC BOND POTENTIAL ---
+        # Define the target bond length (an average for all types is fine)
+        target_length = self.hparams.bond_params.target_length
+        
+        # Define a cutoff radius: only apply the loss to "almost" bonds
+        cutoff_radius = self.hparams.bond_params.cutoff_radius
+        
+        # Calculate the potential: E = (r - r_0)^2
+        potential = (r - target_length)**2
+        
+        # Only apply the potential to pairs of atoms within the cutoff radius
+        out = torch.where(r < cutoff_radius, potential, torch.tensor(0.0, device=r.device))
+        
+        # --safety clamp ---
+        # Prevents a large distance from creating a huge loss.
+        #  equivalent of the clamp_lj for this potential.
+        if hasattr(self.hparams.bond_params, 'clamp_b') and self.hparams.bond_params.clamp_b is not None:
+            out = torch.clamp(out, min=None, max=self.hparams.bond_params.clamp_b)
+       
+        out = scatter_add(out, edges[0], dim=0, dim_size=len(atom_x))
+        return scatter_add(out, batch_mask, dim=0)
+    
 
     def log_metrics(self, metrics_dict, split, batch_size=None, **kwargs):
         for m, value in metrics_dict.items():
