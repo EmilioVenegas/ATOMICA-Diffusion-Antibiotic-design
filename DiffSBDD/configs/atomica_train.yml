@@ -1,11 +1,11 @@
-run_name: '128h-nocutoff-v16' # New run name
+run_name: 'centered-refactored-v1' # New run name
 logdir: './my_logs'
 wandb_params:
   mode: 'disabled'
   entity: 'my_username'
   group: 'atomica'
 dataset: 'atomica_PL'
-datadir: 'data/processed_atomica'
+datadir: data/processed_atomica_centered/
 atomica_model_config: ATOMICA/pretrain/pretrain_model_config.json
 atomica_model_weights: ATOMICA/pretrain/pretrain_model_weights.pt
 enable_progress_bar: True
@@ -14,7 +14,7 @@ num_sanity_val_steps: 0
 mode: 'pocket_conditioning'
 pocket_representation: 'atomica'
 batch_size: 2
-lr: 5.0e-6 # Slightly lower LR, relying on scheduler
+lr: 1.0e-5 # Slightly lower LR, relying on scheduler
 noise_factor: 1.0
 n_epochs: 1000
 num_workers: 8
@@ -22,21 +22,23 @@ gpus: 1
 strategy: 'auto'
 clip_grad: True
 augment_rotation: False
+warmup_steps: 500
 
 augment_noise: 1.0e-4 # Reduced jitter
 accumulate_grad_batches: 8
-gradient_clip_val: 0.5 #  aggressive gradient clipping
+gradient_clip_algorithm: 'value'
+gradient_clip_val: 1.0 #  aggressive gradient clipping
 
 auxiliary_loss: True
 loss_params:
-  max_weight: 0.2
+  max_weight: 0.01
   schedule: 'linear'
-  clamp_lj: 1.0
+  clamp_lj: 10.0
 
 egnn_params:
   #context_nf: 512
   device: 'cuda'
-  edge_cutoff_ligand: null # Set explicit cutoffs
+  edge_cutoff_ligand: 5.0 # Set explicit cutoffs
   #edge_cutoff_pocket: 5.0
   edge_cutoff_interaction: 5.0
   reflection_equivariant: True
@@ -46,11 +48,12 @@ egnn_params:
   n_layers: 4
   attention: True
   tanh: True  
+  coords_range: 15.0
   norm_constant: 1.0 # Ensure this is a float
   inv_sublayers: 1
   sin_embedding: False
-  aggregation_method: 'mean'
-  normalization_factor: 1.0 # Not used for 'mean', but set to 1 for safety
+  aggregation_method: 'sum'
+  normalization_factor: 100.0 # Not used for 'mean', but set to 1 for safety
   edge_embedding_dim: 32
 
 diffusion_params:
@@ -58,7 +61,7 @@ diffusion_params:
   diffusion_noise_schedule: 'polynomial_2'
   diffusion_noise_precision: 1.0e-4 # Slightly higher precision
   diffusion_loss_type: 'l2'
-  normalize_factors: [1.0, 4.0] 
+  normalize_factors: [5.0, 1.0] 
 
 eval_epochs: 50
 visualize_sample_epoch: 50
