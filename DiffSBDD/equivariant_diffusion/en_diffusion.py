@@ -956,130 +956,85 @@ class DistributionNodes(object):
     def __init__(self, histogram):
         histogram = torch.tensor(histogram).float()
         histogram = histogram + 1e-3  # for numerical stability
-        self.prob = histogram / histogram.sum()
 
-        self.m = torch.distributions.Categorical(self.prob.view(-1),
-                                                 validate_args=True)
+        self.is_2d = (len(histogram.shape) == 2)
 
-        # ---  FIX: Handle both 1D and 2D histograms ---
-        if len(self.prob.shape) == 1:
-            # 1D Histogram (e.g., atomica, only ligand nodes)
-            self.is_2d = False
-            self.idx_to_n_nodes = torch.tensor(
-                [(i,) for i in range(self.prob.shape[0])]
-            ).view(-1, 1)
+        if self.is_2d:
+            # --- 2D Histogram Logic (for conditional models) ---
+            self.prob_joint = histogram / histogram.sum()
+            self.prob_n2 = self.prob_joint.sum(dim=0) # Marginal probability of pocket size
+            self.prob_n1 = self.prob_joint.sum(dim=1) # Marginal probability of ligand size
 
-            self.n_nodes_to_idx = {tuple(x.tolist()): i
-                                   for i, x in enumerate(self.idx_to_n_nodes)}
-            
-            # Conditional sampling is not defined for 1D, but create placeholders
-            self.n1_given_n2 = [torch.distributions.Categorical(self.prob, validate_args=True)]
-            self.n2_given_n1 = [torch.distributions.Categorical(self.prob, validate_args=True)]
+            # Precompute conditional probabilities P(n1 | n2)
+            self.n1_given_n2 = [
+                torch.distributions.Categorical(self.prob_joint[:, j] / (self.prob_n2[j] + 1e-8), validate_args=False)
+                for j in range(self.prob_joint.shape[1])
+            ]
+            self.m = torch.distributions.Categorical(self.prob_joint.view(-1), validate_args=False)
 
         else:
-            # 2D Histogram (e.g., crossdock, joint ligand/pocket nodes)
-            self.is_2d = True
-            self.idx_to_n_nodes = torch.tensor(
-                [[(i, j) for j in range(self.prob.shape[1])] for i in range(self.prob.shape[0])]
-            ).view(-1, 2)
-
-            self.n_nodes_to_idx = {tuple(x.tolist()): i
-                                   for i, x in enumerate(self.idx_to_n_nodes)}
-
-            self.n1_given_n2 = \
-                [torch.distributions.Categorical(self.prob[:, j], validate_args=True)
-                 for j in range(self.prob.shape[1])]
-            self.n2_given_n1 = \
-                [torch.distributions.Categorical(self.prob[i, :], validate_args=True)
-                 for i in range(self.prob.shape[0])]
-        # --- End Fix ---
+            # --- Original 1D Histogram Logic (for unconditional models) ---
+            self.prob = histogram / histogram.sum()
+            self.m = torch.distributions.Categorical(self.prob, validate_args=False)
 
     def sample(self, n_samples=1):
-        idx = self.m.sample((n_samples,))
-        n_nodes = self.idx_to_n_nodes[idx]
-        return n_nodes
-
+        # This is for unconditional sampling, which we are not using.
+        # We can just sample from the marginal ligand distribution for simplicity.
+        prob_to_sample = self.prob_n1 if self.is_2d else self.prob
+        n1 = torch.distributions.Categorical(prob_to_sample, validate_args=False).sample((n_samples,))
+        # The node counts are 1-based, so add 1 to the sampled index.
+        return n1 + 1
+        
     def sample_conditional(self, n1=None, n2=None, n_samples=1):
         if not self.is_2d:
+            # Fallback for 1D histogram
+            print("Warning: Attempting conditional sampling with a 1D histogram. Sampling unconditionally.")
             return self.sample(n_samples)
             
-        assert (n1 is None) ^ (n2 is None)
-        if n2 is not None:
-            n1_samples = []
-            for pocket_size in n2:
-                dist = self.n1_given_n2[pocket_size.item()]
-                n1_samples.append(dist.sample())
+        assert (n1 is None) and (n2 is not None), "Must provide n2 (pocket sizes) for conditional sampling."
+        
+        n1_samples = []
+        for pocket_size in n2:
+            # Clamp pocket size to be within the histogram's bounds
+            pocket_idx = min(pocket_size.item() - 1, len(self.n1_given_n2) - 1)
             
-            n1 = torch.stack(n1_samples)
-            n_nodes = torch.stack((n1, n2.to(n1.device)), dim=1)
-        else:
-            n2_samples = []
-            for ligand_size in n1:
-                dist = self.n2_given_n1[ligand_size.item()]
-                n2_samples.append(dist.sample())
-            
-            n2 = torch.stack(n2_samples)
-            n_nodes = torch.stack((n1.to(n2.device), n2), dim=1)
+            if pocket_idx < 0:
+                print(f"Warning: Pocket size {pocket_size.item()} is invalid. Sampling from marginal.")
+                dist = torch.distributions.Categorical(self.prob_n1, validate_args=False)
+            else:
+                dist = self.n1_given_n2[pocket_idx]
+
+            # Sample the index (0-based) and add 1 to get the node count (1-based)
+            sampled_n1 = dist.sample() + 1
+            n1_samples.append(sampled_n1)
+        
+        n1 = torch.stack(n1_samples)
+        # Return a tensor of shape [n_samples, 2] for compatibility, even though n2 was input
+        n_nodes = torch.stack((n1, n2.to(n1.device)), dim=1)
         return n_nodes
 
-
-    def log_prob(self, batch_n_nodes_1, batch_n_nodes_2):
-        assert len(batch_n_nodes_1.size()) == 1
-        assert len(batch_n_nodes_2.size()) == 1
-
-        if not self.is_2d:
-            # 1D case: use n1 (ligand nodes) only
-            try:
-                idx = torch.tensor(
-                    [self.n_nodes_to_idx[(n1,)]
-                     for n1 in batch_n_nodes_1.tolist()], device=batch_n_nodes_1.device
-                )
-            except KeyError as e:
-                print(f"Error: Node count {e} not in 1D n_nodes_to_idx histogram (log_prob).")
-                raise e
-        else:
-            # 2D case
-            try:
-                idx = torch.tensor(
-                    [self.n_nodes_to_idx[(n1, n2)]
-                     for n1, n2 in zip(batch_n_nodes_1.tolist(), batch_n_nodes_2.tolist())],
-                    device=batch_n_nodes_1.device
-                )
-            except KeyError as e:
-                print(f"Error: Node counts {(e,)} not in 2D n_nodes_to_idx histogram (log_prob).")
-                raise e
-
-        log_probs = self.m.log_prob(idx.to(self.m.logits.device))
-
-        return log_probs.to(batch_n_nodes_1.device)
-
     def log_prob_n1_given_n2(self, n1, n2):
-        assert len(n1.size()) == 1
-        assert len(n2.size()) == 1
-
+        # Calculates log P(n1 | n2)
         if not self.is_2d:
-            # 1D case: p(n1 | n2) = p(n1). We ignore n2.
-            # We need to get the indices from the n1 counts.
-            try:
-                idx = torch.tensor(
-                    [self.n_nodes_to_idx[(c,)]
-                     for c in n1.tolist()], device=n1.device
-                )
-            except KeyError as e:
-                print(f"Error: Node count {e} not in 1D n_nodes_to_idx histogram (log_prob_n1_given_n2).")
-                raise e
-            log_probs = self.m.log_prob(idx.to(self.m.logits.device))
-        else:
-            # Original 2D logic
-            if n2.max() >= len(self.n1_given_n2) or n2.min() < 0:
-                 raise IndexError(f"Error: n2 (pocket node count) value out of range. "
-                                  f"Max n2: {n2.max()}, min n2: {n2.min()}, "
-                                  f"size of n1_given_n2: {len(self.n1_given_n2)}")
-            log_probs = torch.stack([self.n1_given_n2[c].log_prob(i.cpu())
-                                     for i, c in zip(n1, n2)])
-        
-        return log_probs.to(n1.device)
+            # For 1D, P(n1|n2) = P(n1)
+            n1_idx = (n1 - 1).clamp(0, len(self.prob) - 1)
+            return torch.log(self.prob[n1_idx.long()] + 1e-8)
 
+        log_probs = []
+        for i, c in zip(n1, n2):
+            # Clamp indices to be within bounds
+            n1_idx = min(i.item() - 1, self.prob_joint.shape[0] - 1)
+            n2_idx = min(c.item() - 1, self.prob_joint.shape[1] - 1)
+
+            if n1_idx < 0 or n2_idx < 0:
+                log_probs.append(torch.tensor(-30.0)) # Very small log probability
+                continue
+
+            dist = self.n1_given_n2[n2_idx]
+            log_probs.append(dist.log_prob(torch.tensor(n1_idx).to(dist.logits.device)))
+
+        log_probs = torch.stack(log_probs)
+        return log_probs.to(n1.device)
 
 class PositiveLinear(torch.nn.Module):
     """Linear layer with weights forced to be positive."""
