@@ -175,6 +175,10 @@ class LigandPocketDDPM(pl.LightningModule):
             self.dataset_info['atom_encoder'] = self.lig_type_encoder
             self.dataset_info['atom_decoder'] = self.lig_type_decoder
 
+            # ADD THESE TWO LINES TO FIX THE CRASH
+            self.dataset_info['colors_dic'].append('#9400D3')  # Add a color for the virtual atom (e.g., DarkViolet)
+            self.dataset_info['radius_dic'].append(0.5)        # Add a radius for the virtual atom
+
         self.atom_nf = len(self.lig_type_decoder)
         
         # --- MODIFIED: Set aa_nf based on representation ---
@@ -298,11 +302,13 @@ class LigandPocketDDPM(pl.LightningModule):
         )
         
         return {
-            "optimizer": optimizer,
-            "lr_scheduler": {
-                "scheduler": scheduler,
-                "monitor": "loss/val",
-            },
+        "optimizer": optimizer,
+        "lr_scheduler": {
+            "scheduler": ReduceLROnPlateau(optimizer, 'min', factor=0.8, patience=10, verbose=True),
+            "monitor": "loss/val",  # Metric to monitor
+            "interval": "epoch",    # Check metric at the end of each epoch
+            "frequency": 1,
+        },
         }
 
 
