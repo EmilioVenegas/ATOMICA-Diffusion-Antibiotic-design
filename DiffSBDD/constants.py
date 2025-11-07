@@ -195,7 +195,7 @@ atom_colors['O'] = '#ff4d4d'  # Red
 atom_colors['S'] = '#e6c540'  # Yellow
 atom_colors['P'] = '#ff8000'  # Orange
 atom_colors['F'] = '#B3FFFF'  # Light Blue
-atom_colors['Cl'] = '#1FF01F' # Bright Green
+atom_colors['Cl'] = "#0D700D" # Bright Green
 atom_colors['Br'] = '#A62929' # Dark Red
 atom_colors['I'] = '#940094'  # Purple
 atom_colors['H'] = '#FFFFFF'  # White (not in list, but good to have)
@@ -207,14 +207,39 @@ druglike_radius_list = []
 druglike_atom_hist_array = np.array([0.58447313, 0.09319977, 0.28838374, 0.00662685, 0.02323252, 0.00200347, 0.00138702, 0.00023117, 0.00046234])
 for i, atom_symbol in enumerate(DRUGLIKE_ATOMS_DECODER):
     druglike_colors_list.append(atom_colors.get(atom_symbol, DEFAULT_COLOR))
-    druglike_radius_list.append(0.3) # Default radius
+    # Get radius in pm, default to 30pm, convert to Angstrom for plotting
+    radius_in_pm = covalent_radii.get(atom_symbol, 30) # e.g., 60
+    radius_in_angstroms = radius_in_pm / 100.0         # e.g., 0.6
+    druglike_radius_list.append(radius_in_angstroms)
 # 3. Create the new 9x9 bond matrices
 #    (This uses your 'build_matrix' helper function and 'bonds1' raw dict)
 druglike_bonds1_matrix = build_matrix(bonds1, DRUGLIKE_ATOMS_DECODER)
 druglike_bonds2_matrix = build_matrix(bonds2, DRUGLIKE_ATOMS_DECODER)
 druglike_bonds3_matrix = build_matrix(bonds3, DRUGLIKE_ATOMS_DECODER)
-# Use bonds1 as the Lennard-Jones template
-druglike_lennard_jones_matrix = druglike_bonds1_matrix 
+# Create the Lennard-Jones r_m matrix based on the sum of covalent radii.
+# This approximates the van der Waals minimum energy distance (r_m) for 
+# non-bonded pairs, which is what the LJ potential is for.
+# This prevents the "atom clumping" bug if auxiliary_loss is turned on.
+
+n_atoms_druglike = len(DRUGLIKE_ATOMS_DECODER)
+druglike_lennard_jones_matrix = np.zeros((n_atoms_druglike, n_atoms_druglike))
+
+for i in range(n_atoms_druglike):
+    atom_i = DRUGLIKE_ATOMS_DECODER[i]
+    # Get the radius for atom i from the covalent_radii dict
+    # Default to 60 (Carbon) if somehow missing
+    radius_i = covalent_radii.get(atom_i, 60) 
+    
+    for j in range(i, n_atoms_druglike): # Start from i to fill the symmetric matrix
+        atom_j = DRUGLIKE_ATOMS_DECODER[j]
+        radius_j = covalent_radii.get(atom_j, 60)
+        
+        # The minimum energy distance (r_m) is the sum of their radii
+        rm_ij = radius_i + radius_j
+        
+        druglike_lennard_jones_matrix[i, j] = rm_ij
+        druglike_lennard_jones_matrix[j, i] = rm_ij # Make symmetric
+
 
 
 # ------------------------------------------------------------------------------
