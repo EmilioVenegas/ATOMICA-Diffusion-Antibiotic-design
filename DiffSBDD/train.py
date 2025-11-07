@@ -81,19 +81,18 @@ if __name__ == "__main__":
         if 'atomica_embed_dim' not in args.egnn_params:
             print("Warning: 'atomica_embed_dim' not in egnn_params. Defaulting to 128.")
             args.egnn_params.atomica_embed_dim = 128
-    # --- END NEW ---
+    
 
     out_dir = Path(args.logdir, args.run_name)
+    # Fail loudly if the histogram file is missing
     histogram_file = Path(args.datadir, 'size_distribution.npy')
     if not histogram_file.exists():
-         # --- NEW: Fallback for atomica data ---
-         print(f"Warning: {histogram_file} not found.")
-         print("Using fallback histogram. Please generate a histogram "
-               "for your processed dataset.")
-         # Dummy histogram, replace this
-         histogram = [0.0] + [1.0 / 100] * 100 
-    else:
-        histogram = np.load(histogram_file).tolist()
+         raise FileNotFoundError(
+             f"Critical Error: The node histogram file was not found at {histogram_file}\n"
+             "This file is required for the VLB loss calculation.\n"
+             "Please generate it (e.g., using a preprocessing script) and place it in your datadir."
+         )
+    histogram = np.load(histogram_file).tolist()
         
     pl_module = LigandPocketDDPM(
         outdir=out_dir,
