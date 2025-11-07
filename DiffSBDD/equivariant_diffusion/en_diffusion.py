@@ -332,7 +332,7 @@ class EnVariationalDiffusion(nn.Module):
         Returns:
             log p(N)
         """
-        log_pN = self.size_distribution.log_prob(N_lig, N_pocket)
+        log_pN = self.size_distribution.log_prob_n1_given_n2(N_lig, N_pocket)
         return log_pN
 
     def delta_log_px(self, num_nodes):
