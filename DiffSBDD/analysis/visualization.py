@@ -8,6 +8,9 @@ import imageio
 
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from matplotlib.colors import LightSource, to_rgb
+from scipy.spatial import cKDTree  # <-- ADDED for performance
+
 from analysis.molecule_builder import get_bond_order
 
 
@@ -66,37 +69,46 @@ def load_xyz_files(path, shuffle=True):
 # <----########
 ### Files ####
 ##############
+
+
+# --- MODIFIED FUNCTION ---
 def draw_sphere(ax, x, y, z, size, color, alpha):
+    """
+    Draws a 3D sphere with realistic lighting.
+    """
     u = np.linspace(0, 2 * np.pi, 100)
     v = np.linspace(0, np.pi, 100)
 
+    # Sphere coordinates
     xs = size * np.outer(np.cos(u), np.sin(v))
-    ys = size * np.outer(np.sin(u), np.sin(v)) * 0.8  # Correct for matplotlib.
+    ys = size * np.outer(np.sin(u), np.sin(v)) # Removed * 0.8 hack for a true sphere
     zs = size * np.outer(np.ones(np.size(u)), np.cos(v))
-    # for i in range(2):
-    #    ax.plot_surface(x+random.randint(-5,5), y+random.randint(-5,5), z+random.randint(-5,5),  rstride=4, cstride=4, color='b', linewidth=0, alpha=0.5)
 
-    ax.plot_surface(x + xs, y + ys, z + zs, rstride=2, cstride=2, color=color,
+    # --- ADDED: Create a light source ---
+    light = LightSource(azdeg=120, altdeg=30)
+    
+    # Convert input color (hex) to an RGB tuple
+    rgb_color = to_rgb(color)
+    
+    # Create an RGBA array for the surface facecolors
+    # This allows the light source to shade the sphere
+    colors_rgba = np.zeros(list(xs.shape) + [4])
+    colors_rgba[..., 0] = rgb_color[0]
+    colors_rgba[..., 1] = rgb_color[1]
+    colors_rgba[..., 2] = rgb_color[2]
+    colors_rgba[..., 3] = alpha
+
+    # Plot the surface with shading
+    ax.plot_surface(x + xs, y + ys, z + zs, 
+                    rstride=2, cstride=2,
+                    facecolors=colors_rgba,  # Use facecolors for shading
+                    lightsource=light,       # Apply light source
+                    shade=True,              # Enable shading
                     linewidth=0,
                     alpha=alpha)
-    # # calculate vectors for "vertical" circle
-    # a = np.array([-np.sin(elev / 180 * np.pi), 0, np.cos(elev / 180 * np.pi)])
-    # b = np.array([0, 1, 0])
-    # b = b * np.cos(rot) + np.cross(a, b) * np.sin(rot) + a * np.dot(a, b) * (
-    #             1 - np.cos(rot))
-    # ax.plot(np.sin(u), np.cos(u), 0, color='k', linestyle='dashed')
-    # horiz_front = np.linspace(0, np.pi, 100)
-    # ax.plot(np.sin(horiz_front), np.cos(horiz_front), 0, color='k')
-    # vert_front = np.linspace(np.pi / 2, 3 * np.pi / 2, 100)
-    # ax.plot(a[0] * np.sin(u) + b[0] * np.cos(u), b[1] * np.cos(u),
-    #         a[2] * np.sin(u) + b[2] * np.cos(u), color='k', linestyle='dashed')
-    # ax.plot(a[0] * np.sin(vert_front) + b[0] * np.cos(vert_front),
-    #         b[1] * np.cos(vert_front),
-    #         a[2] * np.sin(vert_front) + b[2] * np.cos(vert_front), color='k')
-    #
-    # ax.view_init(elev=elev, azim=0)
 
 
+# --- MODIFIED FUNCTION ---
 def plot_molecule(ax, positions, atom_type, alpha, spheres_3d, hex_bg_color,
                   dataset_info, override_color=None):
     
@@ -106,7 +118,7 @@ def plot_molecule(ax, positions, atom_type, alpha, spheres_3d, hex_bg_color,
     safe_atom_type = np.clip(atom_type, 0, max_atom_index)
     
     radius_dic = np.array(dataset_info['radius_dic'])
-    area_dic = 1500 * radius_dic ** 2
+    area_dic = 200 * radius_dic ** 2
     radii = radius_dic[safe_atom_type]
     areas = area_dic[safe_atom_type]
 
@@ -119,41 +131,59 @@ def plot_molecule(ax, positions, atom_type, alpha, spheres_3d, hex_bg_color,
         colors = colors_dic[safe_color_atom_type]
     # --- END COLOR OVERRIDE LOGIC ---
 
-    x = positions[:, 0]
-    y = positions[:, 1]
-    z = positions[:, 2]
+    # Get positions as a numpy array for plotting and k-d tree
+    all_positions_np = positions.cpu().numpy()
+    x = all_positions_np[:, 0]
+    y = all_positions_np[:, 1]
+    z = all_positions_np[:, 2]
 
     if spheres_3d:
         for i, j, k, s, c in zip(x, y, z, radii, colors):
+            # Use .item() for individual coordinates
             draw_sphere(ax, i.item(), j.item(), k.item(), 0.7 * s, c, alpha)
     else:
         ax.scatter(x, y, z, s=areas, alpha=0.9 * alpha,
                    c=colors)
 
-    for i in range(len(x)):
-        for j in range(i + 1, len(x)):
-            p1 = np.array([x[i], y[i], z[i]])
-            p2 = np.array([x[j], y[j], z[j]])
-            dist = np.sqrt(np.sum((p1 - p2) ** 2))
-            
-            # Ensure atom types are valid before decoding
-            atom1_idx = np.clip(atom_type[i], 0, len(dataset_info['atom_decoder']) - 1)
-            atom2_idx = np.clip(atom_type[j], 0, len(dataset_info['atom_decoder']) - 1)
-            
-            atom1 = dataset_info['atom_decoder'][atom1_idx]
-            atom2 = dataset_info['atom_decoder'][atom2_idx]
-            
-            draw_edge_int = get_bond_order(atom1, atom2, dist)
-            line_width = 2
+    # --- PERFORMANCE IMPROVEMENT: Use k-d tree for bond finding ---
+    # This is much faster than the old O(N^2) nested loop
+    
+    # 1. Create the tree from atom positions
+    tree = cKDTree(all_positions_np)
 
-            draw_edge = draw_edge_int > 0
-            if draw_edge:
-                linewidth_factor = 1.5 if draw_edge_int == 4 else 1
-                ax.plot([x[i], x[j]], [y[i], y[j]], [z[i], z[j]],
-                        linewidth=line_width * linewidth_factor,
-                        c=hex_bg_color, alpha=alpha)
+    # 2. Set a max bond distance (Angstroms) to search for pairs
+    # This is a heuristic; get_bond_order will do the precise check
+    MAX_BOND_DIST = 3.5 
+
+    # 3. Find all pairs of atoms within this distance
+    bond_pairs = tree.query_pairs(r=MAX_BOND_DIST)
+
+    # 4. Iterate *only* over these potential bond pairs
+    for (i, j) in bond_pairs:
+        p1 = all_positions_np[i]
+        p2 = all_positions_np[j]
+        dist = np.sqrt(np.sum((p1 - p2) ** 2))
+        
+        # Ensure atom types are valid before decoding
+        atom1_idx = np.clip(atom_type[i], 0, len(dataset_info['atom_decoder']) - 1)
+        atom2_idx = np.clip(atom_type[j], 0, len(dataset_info['atom_decoder']) - 1)
+        
+        atom1 = dataset_info['atom_decoder'][atom1_idx]
+        atom2 = dataset_info['atom_decoder'][atom2_idx]
+        
+        draw_edge_int = get_bond_order(atom1, atom2, dist)
+        line_width = 2
+
+        draw_edge = draw_edge_int > 0
+        if draw_edge:
+            linewidth_factor = 1.5 if draw_edge_int == 4 else 1
+            # Plot using the numpy positions
+            ax.plot([p1[0], p2[0]], [p1[1], p2[1]], [p1[2], p2[2]],
+                    linewidth=line_width * linewidth_factor,
+                    c=hex_bg_color, alpha=alpha)
 
 
+# --- MODIFIED FUNCTION ---
 def plot_molecule_and_pocket(
     positions_lig, atom_type_lig, positions_pocket, atom_type_pocket,
     dataset_info, camera_elev=0, camera_azim=0, save_path=None,
@@ -205,16 +235,17 @@ def plot_molecule_and_pocket(
 
     if save_path is not None:
         plt.savefig(save_path, bbox_inches='tight', pad_inches=0.0, dpi=dpi)
-        if spheres_3d:
-            img = imageio.imread(save_path)
-            img_brighter = np.clip(img * 1.4, 0, 255).astype('uint8')
-            imageio.imsave(save_path, img_brighter)
+        
+        # --- REMOVED ---
+        # The np.clip(img * 1.4, ...) hack is no longer needed
+        # because the LightSource in draw_sphere provides better lighting.
+        
     else:
         plt.show()
     plt.close()
 
 
-
+# --- MODIFIED FUNCTION ---
 def plot_data3d(positions, atom_type, dataset_info, camera_elev=0,
                 camera_azim=0, save_path=None, spheres_3d=False,
                 bg='black', alpha=1.):
@@ -231,7 +262,7 @@ def plot_data3d(positions, atom_type, dataset_info, camera_elev=0,
         ax.set_facecolor(black)
     else:
         ax.set_facecolor(white)
-    # ax.xaxis.pane.set_edgecolor('#D0D0D0')
+    
     ax.xaxis.pane.set_alpha(0)
     ax.yaxis.pane.set_alpha(0)
     ax.zaxis.pane.set_alpha(0)
@@ -245,47 +276,27 @@ def plot_data3d(positions, atom_type, dataset_info, camera_elev=0,
     plot_molecule(ax, positions, atom_type, alpha, spheres_3d,
                   hex_bg_color, dataset_info)
 
-    # if 'qm9' in dataset_info['name']:
     max_value = positions.abs().max().item()
-
-    # axis_lim = 3.2
     axis_lim = min(40, max(max_value / 1.5 + 0.3, 3.2))
     ax.set_xlim(-axis_lim, axis_lim)
     ax.set_ylim(-axis_lim, axis_lim)
     ax.set_zlim(-axis_lim, axis_lim)
-    # elif dataset_info['name'] == 'geom':
-    #     max_value = positions.abs().max().item()
-    #
-    #     # axis_lim = 3.2
-    #     axis_lim = min(40, max(max_value / 1.5 + 0.3, 3.2))
-    #     ax.set_xlim(-axis_lim, axis_lim)
-    #     ax.set_ylim(-axis_lim, axis_lim)
-    #     ax.set_zlim(-axis_lim, axis_lim)
-    # elif dataset_info['name'] == 'pdbbind':
-    #     max_value = positions.abs().max().item()
-    #
-    #     # axis_lim = 3.2
-    #     axis_lim = min(40, max(max_value / 1.5 + 0.3, 3.2))
-    #     ax.set_xlim(-axis_lim, axis_lim)
-    #     ax.set_ylim(-axis_lim, axis_lim)
-    #     ax.set_zlim(-axis_lim, axis_lim)
-    # else:
-    #     raise ValueError(dataset_info['name'])
-
+    
     dpi = 120 if spheres_3d else 50
 
     if save_path is not None:
         plt.savefig(save_path, bbox_inches='tight', pad_inches=0.0, dpi=dpi)
 
-        if spheres_3d:
-            img = imageio.imread(save_path)
-            img_brighter = np.clip(img * 1.4, 0, 255).astype('uint8')
-            imageio.imsave(save_path, img_brighter)
+        # --- REMOVED ---
+        # The np.clip(img * 1.4, ...) hack is no longer needed
+        # because the LightSource in draw_sphere provides better lighting.
+        
     else:
         plt.show()
     plt.close()
 
 
+# --- MODIFIED FUNCTION ---
 def plot_data3d_uncertainty(
         all_positions, all_atom_types, dataset_info, camera_elev=0,
         camera_azim=0,
@@ -303,7 +314,7 @@ def plot_data3d_uncertainty(
         ax.set_facecolor(black)
     else:
         ax.set_facecolor(white)
-    # ax.xaxis.pane.set_edgecolor('#D0D0D0')
+    
     ax.xaxis.pane.set_alpha(0)
     ax.yaxis.pane.set_alpha(0)
     ax.zaxis.pane.set_alpha(0)
@@ -322,24 +333,18 @@ def plot_data3d_uncertainty(
 
     if 'qm9' in dataset_info['name']:
         max_value = all_positions[0].abs().max().item()
-
-        # axis_lim = 3.2
         axis_lim = min(40, max(max_value + 0.3, 3.2))
         ax.set_xlim(-axis_lim, axis_lim)
         ax.set_ylim(-axis_lim, axis_lim)
         ax.set_zlim(-axis_lim, axis_lim)
     elif dataset_info['name'] == 'geom':
         max_value = all_positions[0].abs().max().item()
-
-        # axis_lim = 3.2
         axis_lim = min(40, max(max_value / 2 + 0.3, 3.2))
         ax.set_xlim(-axis_lim, axis_lim)
         ax.set_ylim(-axis_lim, axis_lim)
         ax.set_zlim(-axis_lim, axis_lim)
     elif dataset_info['name'] == 'pdbbind':
         max_value = all_positions[0].abs().max().item()
-
-        # axis_lim = 3.2
         axis_lim = min(40, max(max_value / 2 + 0.3, 3.2))
         ax.set_xlim(-axis_lim, axis_lim)
         ax.set_ylim(-axis_lim, axis_lim)
@@ -352,10 +357,10 @@ def plot_data3d_uncertainty(
     if save_path is not None:
         plt.savefig(save_path, bbox_inches='tight', pad_inches=0.0, dpi=dpi)
 
-        if spheres_3d:
-            img = imageio.imread(save_path)
-            img_brighter = np.clip(img * 1.4, 0, 255).astype('uint8')
-            imageio.imsave(save_path, img_brighter)
+        # --- REMOVED ---
+        # The np.clip(img * 1.4, ...) hack is no longer needed
+        # because the LightSource in draw_sphere provides better lighting.
+        
     else:
         plt.show()
     plt.close()
@@ -378,7 +383,6 @@ def plot_grid():
 
     for ax, im in zip(grid, [im1, im2, im3, im4]):
         # Iterating over the grid returns the Axes.
-
         ax.imshow(im)
 
     plt.show()
@@ -392,14 +396,13 @@ def visualize(path, dataset_info, max_num=25, wandb=None, spheres_3d=False):
         dists = torch.cdist(positions.unsqueeze(0),
                             positions.unsqueeze(0)).squeeze(0)
         dists = dists[dists > 0]
-        # print("Average distance between atoms", dists.mean().item())
+        
         plot_data3d(positions, atom_type, dataset_info=dataset_info,
                     save_path=file[:-4] + '.png',
                     spheres_3d=spheres_3d)
 
         if wandb is not None:
             path = file[:-4] + '.png'
-            # Log image(s)
             im = plt.imread(path)
             wandb.log({'molecule': [wandb.Image(im, caption=path)]})
 
@@ -425,8 +428,7 @@ def visualize_chain(path, dataset_info, wandb=None, spheres_3d=False,
     dirname = os.path.dirname(save_paths[0])
     gif_path = dirname + '/output.gif'
     print(f'Creating gif with {len(imgs)} images')
-    # Add the last frame 10 times so that the final result remains temporally.
-    # imgs.extend([imgs[-1]] * 10)
+    
     imageio.mimsave(gif_path, imgs, subrectangles=True)
 
     if wandb is not None:
@@ -468,8 +470,7 @@ def visualize_chain_uncertainty(
     dirname = os.path.dirname(save_paths[0])
     gif_path = dirname + '/output.gif'
     print(f'Creating gif with {len(imgs)} images')
-    # Add the last frame 10 times so that the final result remains temporally.
-    # imgs.extend([imgs[-1]] * 10)
+    
     imageio.mimsave(gif_path, imgs, subrectangles=True)
 
     if wandb is not None:
@@ -481,14 +482,15 @@ if __name__ == '__main__':
     import qm9.dataset as dataset
     from configs.datasets_config import qm9_with_h, geom_with_h
 
-    matplotlib.use('macosx')
+    # Use 'macosx' for local testing, but 'Agg' is set at the top
+    # for server-side compatibility.
+    # matplotlib.use('macosx') 
 
     task = "visualize_molecules"
     task_dataset = 'geom'
 
     if task_dataset == 'qm9':
         dataset_info = qm9_with_h
-
 
         class Args:
             batch_size = 1
@@ -498,9 +500,7 @@ if __name__ == '__main__':
             dataset = 'qm9'
             remove_h = False
 
-
         cfg = Args()
-
         dataloaders, charge_scale = dataset.retrieve_dataloaders(cfg)
 
         for i, data in enumerate(dataloaders['train']):
@@ -515,7 +515,7 @@ if __name__ == '__main__':
 
     elif task_dataset == 'geom':
         files = load_xyz_files('outputs/data')
-        matplotlib.use('macosx')
+        # matplotlib.use('macosx')
         for file in files:
             x, one_hot, _ = load_molecule_xyz(file, dataset_info=geom_with_h)
 
