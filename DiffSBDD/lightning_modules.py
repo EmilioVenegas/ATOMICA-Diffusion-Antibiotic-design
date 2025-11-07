@@ -396,14 +396,13 @@ class LigandPocketDDPM(pl.LightningModule):
             coord_error = error[:, :self.x_dims]**2
             feat_error = error[:, self.x_dims:]**2
 
-            # Apply the coordinate weight
-            coord_loss_weight = self.hparams.coord_loss_weight if hasattr(self.hparams, 'coord_loss_weight') else 1.0
+            # Apply the coordinate weight (you can tune this in your config)
+            coord_loss_weight = self.hparams.get('coord_loss_weight', 1.0)
             weighted_coord_error = coord_loss_weight * coord_error
 
             # Recombine into a single error tensor
             squared_error = torch.cat([weighted_coord_error, feat_error], dim=1)
             # --- END FIX ---
-
             if self.virtual_nodes:
                 squared_error[:, :self.x_dims] = torch.where(
                     ligand['one_hot'][:, self.virtual_atom:self.virtual_atom+1].bool(),
@@ -431,7 +430,7 @@ class LigandPocketDDPM(pl.LightningModule):
         if hasattr(self.hparams, 'auxiliary_loss') and self.hparams.auxiliary_loss and self.training:
             weighted_lj_repulsion = \
                 self.auxiliary_weight_schedule(t_int.long()) * \
-                self.lj_potential_repulsive_only(x_lig_hat, h_lig_hat, ligand['mask'])
+                self.lj_potential(x_lig_hat, h_lig_hat, ligand['mask'])
             nll = nll + weighted_lj_repulsion
             info['weighted_lj'] = weighted_lj_repulsion.mean(0)
         
@@ -506,7 +505,7 @@ class LigandPocketDDPM(pl.LightningModule):
         lennard_jones_radii = lennard_jones_radii / self.ddpm.norm_values[0]
         atom_type_idx = atom_one_hot.argmax(1)
         
-        # --- heck if indices are out of bounds
+        # --- Check if indices are out of bounds
         if atom_type_idx.max() >= len(lennard_jones_radii) or atom_type_idx.min() < 0:
              print(f"Warning: atom_type_idx max {atom_type_idx.max()} out of bounds for lj_rm (size {len(lennard_jones_radii)})")
              # Clamp indices to be safe
