@@ -94,12 +94,10 @@ class AtomicaDynamics(nn.Module):
         self.update_pocket_coords = False
         self.edge_cutoff_l = edge_cutoff_ligand
         self.edge_cutoff_i = edge_cutoff_interaction
+        self.condition_time = kwargs.get('condition_time', True)
         self.edge_nf = edge_embedding_dim
         self.n_dims = n_dims
         
-        # THIS IS THE FIX: 'condition_time' was missing. It is True by default.
-        self.condition_time = kwargs.get('condition_time', True)
-
         # A single, stable embedding/encoding layer for each input type.
         self.atom_encoder = nn.Linear(atom_nf, hidden_nf)
         self.context_encoder = nn.Linear(context_nf, hidden_nf)

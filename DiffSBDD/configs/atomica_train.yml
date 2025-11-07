@@ -1,11 +1,11 @@
-run_name: 'pull-push-2Dhist-v11' # New run name
+run_name: 'stable-v16' # New run name
 logdir: './my_logs'
 wandb_params:
   mode: 'disabled'
   entity: 'my_username'
   group: 'atomica'
 dataset: 'atomica_PL'
-datadir: data/processed_atomica_filtered/
+datadir: data/processed_atomica_antibiotic_filtered/
 atomica_model_config: ATOMICA/pretrain/pretrain_model_config.json
 atomica_model_weights: ATOMICA/pretrain/pretrain_model_weights.pt
 enable_progress_bar: True
@@ -13,8 +13,8 @@ num_sanity_val_steps: 0
 
 mode: 'pocket_conditioning'
 pocket_representation: 'atomica'
-batch_size: 2
-lr: 1.0e-5 # Slightly lower LR, relying on scheduler
+batch_size: 4
+lr: 5.0e-5 # Slightly lower LR, relying on scheduler
 noise_factor: 1.0
 n_epochs: 1000
 num_workers: 8
@@ -22,29 +22,29 @@ gpus: 1
 strategy: 'auto'
 clip_grad: True
 augment_rotation: False
-warmup_steps: 500
+warmup_steps: 200
 
 
-augment_noise: 1.0e-4 # Reduced jitter
+augment_noise: 0.01 # Reduced jitter
 accumulate_grad_batches: 8
 gradient_clip_algorithm: 'norm'
-gradient_clip_val: 5.0 #  Relaxed
+gradient_clip_val: 1.0 #  Relaxed
 
 # parameter to prioritize geometry
 coord_loss_weight: 10.0
 
 auxiliary_loss: True
 loss_params:
-  max_weight: 2.0
+  max_weight: 0.00001
   schedule: 'linear'
-  clamp_lj: 10.0
+  clamp_lj: 5.0
 
 bond_params:
   enabled: True
-  max_weight: 2.0     # A strong signal to force bonds
-  target_length: 1.55  # Average covalent bond length in Angstroms
-  cutoff_radius: 4   # Apply the loss to any pair of atoms closer than 3.0 A
-  clamp_b: 10.0       # Clamp the bond potential to avoid huge losses
+  max_weight: 2.0   # A strong signal to force bonds
+  target_length: 1.7  # Average covalent bond length in Angstroms
+  cutoff_radius: 3.0  # Apply the loss to any pair of atoms closer than 3.0 A
+  clamp_b: 5.0       # Clamp the bond potential to avoid huge losses
 
 egnn_params:
   #context_nf: 512
@@ -56,15 +56,15 @@ egnn_params:
   atomica_embed_dim: 32
   #joint_nf: 128
   hidden_nf: 128
-  n_layers: 6
+  n_layers: 4 
   attention: True
   tanh: False  
-  coords_range: 20.0
+  coords_range: 15.0
   norm_constant: 1.0 # Ensure this is a float
   inv_sublayers: 1
   sin_embedding: False
-  aggregation_method: 'sum'
-  normalization_factor: 100.0 # Not used for 'mean', but set to 1 for safety
+  aggregation_method: 'mean' #mean is more stable
+  normalization_factor: 1.0 # Not used for 'mean', but set to 1 for safety
   edge_embedding_dim: 32
 
 diffusion_params:
