@@ -5,6 +5,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch_scatter import scatter_add, scatter_mean
+import torch_scatter
 
 import utils
 from equivariant_diffusion.en_diffusion import EnVariationalDiffusion
@@ -122,11 +123,16 @@ class ConditionalDDPM(EnVariationalDiffusion):
 
         # Compute mu for p(zs | zt).
         mu_x_lig = self.compute_x_pred(net_out_lig, z0_lig, gamma_0, lig_mask)
-        xh_lig, xh0_pocket = self.sample_normal_zero_com(
-            mu_x_lig, xh0_pocket, sigma_x, lig_mask, pocket_mask, fix_noise)
-
+        
+        # The new function only takes ligand arguments and only returns the ligand
+        xh_lig = self.sample_normal_com_free_ligand(
+            mu_x_lig, sigma_x, lig_mask, fix_noise)
+        
+        # The pocket is the static, unmodified context that was passed in
+        xh_pocket = xh0_pocket
+        
         x_lig, h_lig = self.unnormalize(
-            xh_lig[:, :self.n_dims], z0_lig[:, self.n_dims:])
+            xh_lig[:, :self.n_dims], z0_lig[:, self.n_dims:]) # Using z0_lig features is part of the original model logic
         x_pocket, h_pocket = self.unnormalize(
             xh0_pocket[:, :self.n_dims], xh0_pocket[:, self.n_dims:])
 
@@ -136,29 +142,37 @@ class ConditionalDDPM(EnVariationalDiffusion):
         return x_lig, h_lig, x_pocket, h_pocket
 
     def sample_normal(self, *args):
-        raise NotImplementedError("Has been replaced by sample_normal_zero_com()")
+        raise NotImplementedError("Has been replaced by sample_normal_com_free_ligand()")
 
-    def sample_normal_zero_com(self, mu_lig, xh0_pocket, sigma, lig_mask,
-                               pocket_mask, fix_noise=False):
-        """Samples from a Normal distribution."""
+    def sample_normal_com_free_ligand(self, mu_lig, sigma, lig_mask, fix_noise=False):
+        """
+        Samples from a Normal distribution and ensures the coordinate
+        noise for the ligand is COM-free.
+        """
         if fix_noise:
-            # bs = 1 if fix_noise else mu.size(0)
             raise NotImplementedError("fix_noise option isn't implemented yet")
 
+        # 1. Sample standard Gaussian noise
         eps_lig = self.sample_gaussian(
             size=(len(lig_mask), self.n_dims + self.atom_nf),
             device=lig_mask.device)
 
+        # 2. Project the coordinate part of the NOISE to be COM-free
+        eps_coords = eps_lig[:, :self.n_dims]
+        
+        # Calculate the CoM of the noise
+        eps_com = torch_scatter.scatter_mean(eps_coords, lig_mask, dim=0)
+        
+        # Subtract the CoM of the noise from the noise itself
+        eps_coords_com_free = eps_coords - eps_com[lig_mask]
+        
+        # Put the COM-free coordinate noise back
+        eps_lig[:, :self.n_dims] = eps_coords_com_free
+
+        # 3. Apply the mean and variance using the COM-free noise
         out_lig = mu_lig + sigma[lig_mask] * eps_lig
 
-        # project to COM-free subspace
-        xh_pocket = xh0_pocket.detach().clone()
-        out_lig[:, :self.n_dims], xh_pocket[:, :self.n_dims] = \
-            self.remove_mean_batch(out_lig[:, :self.n_dims],
-                                   xh0_pocket[:, :self.n_dims],
-                                   lig_mask, pocket_mask)
-
-        return out_lig, xh_pocket
+        return out_lig  # Only return the ligand
 
     def noised_representation(self, xh_lig, xh0_pocket, lig_mask, pocket_mask,
                               gamma_t):
@@ -175,31 +189,21 @@ class ConditionalDDPM(EnVariationalDiffusion):
             size=(len(lig_mask), self.atom_nf),
             device=lig_mask.device)
 
-        # 2. Center the x-component of the noise using the specific
-        #    ligand-centering logic of ConditionalDDPM.
-        # We pass a dummy pocket tensor which will be translated and discarded.
-        dummy_pocket_x = torch.zeros_like(xh0_pocket[:, :self.n_dims])
-        eps_lig_x, _ = self.remove_mean_batch(
-            eps_lig_x_uncen, dummy_pocket_x, lig_mask, pocket_mask
-        )
+        # 2. Project the coordinate part of the NOISE to be COM-free
+        
+        # Calculate the CoM of the noise
+        eps_com = torch_scatter.scatter_mean(eps_lig_x_uncen, lig_mask, dim=0)
+        
+        # Subtract the CoM of the noise from the noise itself
+        eps_lig_x = eps_lig_x_uncen - eps_com[lig_mask]
         
         # 3. Combine the centered x-noise and standard h-noise
         eps_lig = torch.cat([eps_lig_x, eps_lig_h], dim=1)
 
         # Sample z_t given x, h for timestep t, from q(z_t | x, h)
-        # --- DEBUG PRINTS ---
-        #print(f"DEBUG: alpha_t[lig_mask] shape: {alpha_t[lig_mask].shape}")
-        #print(f"DEBUG: xh_lig shape: {xh_lig.shape}")
-        #print(f"DEBUG: sigma_t[lig_mask] shape: {sigma_t[lig_mask].shape}")
-        #print(f"DEBUG: eps_lig shape: {eps_lig.shape}")
-        # --- END DEBUG ---
         z_t_lig = alpha_t[lig_mask] * xh_lig + sigma_t[lig_mask] * eps_lig # Line 175
         xh_pocket = xh0_pocket.detach().clone()
-        z_t_lig[:, :self.n_dims], xh_pocket[:, :self.n_dims] = \
-            self.remove_mean_batch(z_t_lig[:, :self.n_dims],
-                                   xh_pocket[:, :self.n_dims],
-                                   lig_mask, pocket_mask)
-
+        
         return z_t_lig, xh_pocket, eps_lig
 
     def log_pN(self, N_lig, N_pocket):
@@ -417,7 +421,7 @@ class ConditionalDDPM(EnVariationalDiffusion):
             s_array = s_array / timesteps
             t_array = t_array / timesteps
 
-            z_lig, xh_pocket = self.sample_p_zs_given_zt(
+            z_lig = self.sample_p_zs_given_zt(
                 s_array, t_array, z_lig.detach(), xh_pocket.detach(), lig_mask, pocket['mask'])
 
         # Finally sample p(x, h | z_0).
@@ -448,63 +452,67 @@ class ConditionalDDPM(EnVariationalDiffusion):
             self.sigma_and_alpha_t_given_s(gamma_t, gamma_s, zs_lig)
 
         mu_lig = alpha_t_given_s[ligand_mask] * zs_lig
-        zt_lig, xh0_pocket = self.sample_normal_zero_com(
-            mu_lig, xh0_pocket, sigma_t_given_s, ligand_mask, pocket_mask,
-            fix_noise)
-
+        zt_lig = self.sample_normal_com_free_ligand(
+            mu_lig, sigma_t_given_s, ligand_mask, fix_noise)
         return zt_lig, xh0_pocket
+
+
 
     def sample_p_zs_given_zt(self, s, t, zt_lig, xh0_pocket, ligand_mask,
                          pocket_mask, fix_noise=False):
-        """Samples from zs ~ p(zs | zt). Only used during sampling."""
+        """Samples from zs ~ p(zs | zt). This is the standard reverse diffusion step."""
         gamma_s = self.gamma(s)
         gamma_t = self.gamma(t)
 
-        sigma2_t_given_s, sigma_t_given_s, alpha_t_given_s = \
-            self.sigma_and_alpha_t_given_s(gamma_t, gamma_s, zt_lig)
-
-        sigma_t = self.sigma(gamma_t, target_tensor=zt_lig)
-        sigma_s = self.sigma(gamma_s, target_tensor=zt_lig)
-
-        # Neural net prediction.
+        # Use the model to predict the noise that was added to this timestep.
         eps_t_lig, _ = self.dynamics(
             zt_lig, xh0_pocket, t, ligand_mask, pocket_mask)
 
-        # --- START: STABILITY FIX ---
-        # 1. Calculate the predicted x0 (denoised state) using the network's output
+        # Use the predicted noise to estimate the original "clean" data (x_0).
         x0_pred_lig = self.xh_given_zt_and_epsilon(zt_lig, eps_t_lig, gamma_t, ligand_mask)
 
-        # 2. Clip the coordinates and features to a reasonable range to prevent explosions.
-        x_pred_clipped = torch.clamp(x0_pred_lig[:, :self.n_dims], min=-5, max=5)
-        h_pred_clipped = torch.clamp(x0_pred_lig[:, self.n_dims:], min=-3, max=3)
-        x0_pred_lig_clipped = torch.cat([x_pred_clipped, h_pred_clipped], dim=-1)
+        # CRITICAL STABILITY FIX: Clip the predicted coordinates and features.
+        # This acts as a guardrail to prevent the values from exploding.
+        x_pred_clipped = torch.clamp(x0_pred_lig[:, :self.n_dims], min=-25, max=25)
+        h_pred_clipped = torch.clamp(x0_pred_lig[:, self.n_dims:], min=-5, max=5)
+        x0_pred_lig = torch.cat([x_pred_clipped, h_pred_clipped], dim=-1)
 
-        # 3. Re-calculate epsilon from the new, stabilized x0 prediction.
-        alpha_t = self.alpha(gamma_t, zt_lig)
-        eps_t_lig_clipped = (zt_lig - alpha_t[ligand_mask] * x0_pred_lig_clipped) / sigma_t[ligand_mask]
+        # Now, use the formula for the posterior distribution q(z_{t-1} | z_t, x_0)
+        # to find the mean of the distribution for the previous step.
+        alpha_sq_t = torch.sigmoid(-gamma_t)
+        alpha_sq_s = torch.sigmoid(-gamma_s)
+
+        # Avoid division by zero at t=0
+        # We add a small epsilon to the denominator.
+        alpha_sq_t = torch.clamp(alpha_sq_t, min=1e-8)
+        alpha_sq_s = torch.clamp(alpha_sq_s, min=1e-8)
+
+        beta_t = 1 - alpha_sq_t / alpha_sq_s
         
-        # 4. Compute mu for p(zs | zt) using the STABILIZED epsilon.
-        mu_lig = zt_lig / alpha_t_given_s[ligand_mask] - \
-                (sigma2_t_given_s / alpha_t_given_s / sigma_t)[ligand_mask] * \
-                eps_t_lig_clipped
-        # --- END: STABILITY FIX ---
+        # Coefficients for the posterior mean calculation (from DDPM paper, Eq. 7)
+        mu_x_coeff = torch.sqrt(alpha_sq_s) * beta_t / (1 - alpha_sq_t)
+        mu_zt_coeff = torch.sqrt(1-beta_t) * (1 - alpha_sq_s) / (1 - alpha_sq_t)
+        
+        # Calculate the posterior mean
+        mu_lig = mu_x_coeff[ligand_mask] * x0_pred_lig + mu_zt_coeff[ligand_mask] * zt_lig
 
-        # Compute sigma for p(zs | zt).
-        sigma = sigma_t_given_s * sigma_s / sigma_t
+        # The posterior variance is also derived from the paper.
+        beta_tilde_t = ( (1-alpha_sq_s) / (1-alpha_sq_t) ) * beta_t
+        sigma = torch.sqrt(beta_tilde_t)
 
-        # Sample zs given the stabilized parameters derived from zt.
-        zs_lig, xh0_pocket = self.sample_normal_zero_com(
-            mu_lig, xh0_pocket, sigma, ligand_mask, pocket_mask, fix_noise)
+        # Sample the previous step z_{t-1} using the calculated mean and variance.
+        zs_lig = self.sample_normal_com_free_ligand(
+            mu_lig, sigma, ligand_mask, fix_noise
+        )
 
-        return zs_lig, xh0_pocket
-
+        return zs_lig
     def sample_combined_position_feature_noise(self, lig_indices, xh0_pocket,
                                                pocket_indices):
         """
         Samples mean-centered normal noise for z_x, and standard normal noise
         for z_h.
         """
-        raise NotImplementedError("Use sample_normal_zero_com() instead.")
+        raise NotImplementedError("Use sample_normal_com_free_ligand() instead.")
 
     def sample(self, *args):
         raise NotImplementedError("Conditional model does not support sampling "
@@ -512,7 +520,7 @@ class ConditionalDDPM(EnVariationalDiffusion):
 
     @torch.no_grad()
     def sample_given_pocket(self, pocket, num_nodes_lig, return_frames=1,
-                            timesteps=None):
+                        timesteps=None):
         """
         Draw samples from the generative model. Optionally, return intermediate
         states for visualization purposes.
@@ -524,45 +532,53 @@ class ConditionalDDPM(EnVariationalDiffusion):
         n_samples = len(pocket['size'])
         device = pocket['x'].device
 
+        # Save the original pocket's position before any modifications.
+        pocket_com_original = scatter_mean(pocket['x'], pocket['mask'], dim=0)
+
         _, pocket = self.normalize(pocket=pocket)
 
         # xh0_pocket is the original pocket while xh_pocket might be a
         # translated version of it
         xh0_pocket = torch.cat([pocket['x'], pocket['one_hot']], dim=1)
+
+        # --- REFINEMENT START: Center the pocket FIRST ---
+        pocket_com = scatter_mean(xh0_pocket[:, :self.n_dims], pocket['mask'], dim=0)
+        xh0_pocket[:, :self.n_dims] = xh0_pocket[:, :self.n_dims] - pocket_com[pocket['mask']]
+        # --- REFINEMENT END ---
         
         if isinstance(num_nodes_lig, int):
-            # Create a torch.Tensor directly, not a Python list.
             num_nodes_lig = torch.full((n_samples,), fill_value=num_nodes_lig, device=device)
 
         lig_mask = utils.num_nodes_to_batch_mask(
             n_samples, num_nodes_lig, device)
 
-        # Sample from Normal distribution in the pocket center
-        mu_lig_x = scatter_mean(pocket['x'], pocket['mask'], dim=0)
-        mu_lig_h = torch.zeros((n_samples, self.atom_nf), device=device)
-        mu_lig = torch.cat((mu_lig_x, mu_lig_h), dim=1)[lig_mask]
-        sigma = torch.ones_like(pocket['size']).unsqueeze(1)
-
-        z_lig, xh_pocket = self.sample_normal_zero_com(
-            mu_lig, xh0_pocket, sigma, lig_mask, pocket['mask'])
-
-        self.assert_mean_zero_with_mask(z_lig[:, :self.n_dims], lig_mask)
+        # --- REFINEMENT START: Sample initial ligand noise from a simple N(0,I) ---
+        # The context (pocket) is now at the origin, so we can start the ligand there too.
+        z_lig = self.sample_gaussian(
+            size=(len(lig_mask), self.n_dims + self.atom_nf),
+            device=lig_mask.device
+        )
+        # The initial pocket is already centered.
+        xh_pocket = xh0_pocket
+        # --- REFINEMENT END ---
 
         out_lig = torch.zeros((return_frames,) + z_lig.size(),
-                              device=z_lig.device)
+                                device=z_lig.device)
         out_pocket = torch.zeros((return_frames,) + xh_pocket.size(),
-                                 device=device)
+                                    device=device)
 
         # Iteratively sample p(z_s | z_t) for t = 1, ..., T, with s = t - 1.
         for s in reversed(range(0, timesteps)):
             s_array = torch.full((n_samples, 1), fill_value=s,
-                                 device=z_lig.device)
+                                    device=z_lig.device)
             t_array = s_array + 1
             s_array = s_array / timesteps
             t_array = t_array / timesteps
 
-            z_lig, xh_pocket = self.sample_p_zs_given_zt(
-                s_array, t_array, z_lig, xh_pocket, lig_mask, pocket['mask'])
+            z_lig = self.sample_p_zs_given_zt(
+                s_array, t_array, z_lig, xh_pocket, lig_mask, pocket['mask'],
+                fix_noise=False # You may need to pass fix_noise through
+            )
 
             # save frame
             if (s * return_frames) % timesteps == 0:
@@ -573,17 +589,35 @@ class ConditionalDDPM(EnVariationalDiffusion):
         # Finally sample p(x, h | z_0).
         x_lig, h_lig, x_pocket, h_pocket = self.sample_p_xh_given_z0(
             z_lig, xh_pocket, lig_mask, pocket['mask'], n_samples)
+        
+        # --- START: CORRECTED CoG DRIFT CHECK AND FIX ---
+        # This is now the *only* drift correction block.
+        
+        # Get the final CoM of the generated pocket. This *should* be at the
+        # origin, but may have drifted due to numerical errors.
+        pocket_com_final = scatter_mean(x_pocket, pocket['mask'], dim=0)
 
-        self.assert_mean_zero_with_mask(x_lig, lig_mask)
+        # Calculate the drift from the origin.
+        drift = pocket_com_final.abs().max().item()
 
-        # Correct CoM drift for examples without intermediate states
-        if return_frames == 1:
-            max_cog = scatter_add(x_lig, lig_mask, dim=0).abs().max().item()
-            if max_cog > 5e-2:
-                print(f'Warning CoG drift with error {max_cog:.3f}. Projecting '
-                      f'the positions down.')
-                x_lig, x_pocket = self.remove_mean_batch(
-                    x_lig, x_pocket, lig_mask, pocket['mask'])
+        # --- CHANGED: Added warning logic from the deleted block ---
+        if drift > 1.0: # Use a reasonable threshold like 1.0 Angstrom
+            print(f'Warning: Generated pocket CoG drifted {drift:.3f}A from origin. '
+                  f'Translating system back to original CoM.')
+
+        # We now translate the *entire system* back to the original pocket's CoM,
+        # which we saved at the beginning of the function.
+        translation_vector = pocket_com_original - pocket_com_final
+        x_lig = x_lig + translation_vector[lig_mask]
+        x_pocket = x_pocket + translation_vector[pocket['mask']]
+        # --- END: CORRECTED CoG DRIFT CHECK AND FIX ---
+
+
+        # --- REMOVED ---
+        # The entire (and incorrect) second drift correction block that started
+        # with `if return_frames == 1:` has been removed.
+        # --- END REMOVED ---
+        
 
         # Overwrite last frame with the resulting x and h.
         out_lig[0] = torch.cat([x_lig, h_lig], dim=1)
@@ -591,7 +625,7 @@ class ConditionalDDPM(EnVariationalDiffusion):
 
         # remove frame dimension if only the final molecule is returned
         return out_lig.squeeze(0), out_pocket.squeeze(0), lig_mask, \
-               pocket['mask']
+                pocket['mask']
 
     @torch.no_grad()
     def inpaint(self, ligand, pocket, lig_fixed, resamplings=1, return_frames=1,
@@ -639,11 +673,13 @@ class ConditionalDDPM(EnVariationalDiffusion):
         # Sample from Normal distribution in the ligand center
         mu_lig_x = mean_known
         mu_lig_h = torch.zeros((n_samples, self.atom_nf), device=device)
+
         mu_lig = torch.cat((mu_lig_x, mu_lig_h), dim=1)[ligand['mask']]
         sigma = torch.ones_like(pocket['size']).unsqueeze(1)
 
-        z_lig, xh_pocket = self.sample_normal_zero_com(
-            mu_lig, xh0_pocket, sigma, ligand['mask'], pocket['mask'])
+        z_lig = self.sample_normal_com_free_ligand(
+            mu_lig, sigma, ligand['mask'])
+        xh_pocket = xh0_pocket
 
         # Output tensors
         out_lig = torch.zeros((return_frames,) + z_lig.size(),
@@ -668,7 +704,7 @@ class ConditionalDDPM(EnVariationalDiffusion):
                 gamma_s = self.gamma(s_array)
 
                 # sample inpainted part
-                z_lig_unknown, xh_pocket = self.sample_p_zs_given_zt(
+                z_lig_unknown = self.sample_p_zs_given_zt(
                     s_array, t_array, z_lig, xh_pocket, ligand['mask'],
                     pocket['mask'])
 
@@ -728,12 +764,10 @@ class ConditionalDDPM(EnVariationalDiffusion):
     def remove_mean_batch(cls, x_lig, x_pocket, lig_indices, pocket_indices):
 
         # Just subtract the center of mass of the sampled part
-        mean = scatter_mean(x_lig, lig_indices, dim=0)
-
-        x_lig = x_lig - mean[lig_indices]
-        x_pocket = x_pocket - mean[pocket_indices]
+        mean_pocket = scatter_mean(x_pocket, pocket_indices, dim=0)
+        x_lig = x_lig - mean_pocket[lig_indices]
+        x_pocket = x_pocket - mean_pocket[pocket_indices]
         return x_lig, x_pocket
-
 
 # ------------------------------------------------------------------------------
 # The same model without subspace-trick
