@@ -471,9 +471,7 @@ class ConditionalDDPM(EnVariationalDiffusion):
         # Use the predicted noise to estimate the original "clean" data (x_0).
         x0_pred_lig = self.xh_given_zt_and_epsilon(zt_lig, eps_t_lig, gamma_t, ligand_mask)
 
-        # CRITICAL STABILITY FIX: Clip the predicted coordinates and features.
-        # This acts as a guardrail to prevent the values from exploding.
-        x_pred_clipped = torch.clamp(x0_pred_lig[:, :self.n_dims], min=-25, max=25)
+        x_pred_clipped = torch.clamp(x0_pred_lig[:, :self.n_dims], min=-10, max=10)
         h_pred_clipped = torch.clamp(x0_pred_lig[:, self.n_dims:], min=-5, max=5)
         x0_pred_lig = torch.cat([x_pred_clipped, h_pred_clipped], dim=-1)
 
@@ -483,17 +481,15 @@ class ConditionalDDPM(EnVariationalDiffusion):
         alpha_sq_s = torch.sigmoid(-gamma_s)
 
         # Avoid division by zero at t=0
-        # We add a small epsilon to the denominator.
         alpha_sq_t = torch.clamp(alpha_sq_t, min=1e-8)
-        alpha_sq_s = torch.clamp(alpha_sq_s, min=1e-8)
-
-        beta_t = 1 - alpha_sq_t / alpha_sq_s
+        
+        beta_t = 1 - alpha_sq_t / torch.clamp(alpha_sq_s, min=1e-8) # Also clamp denominator here
         
         # Coefficients for the posterior mean calculation (from DDPM paper, Eq. 7)
         mu_x_coeff = torch.sqrt(alpha_sq_s) * beta_t / (1 - alpha_sq_t)
         mu_zt_coeff = torch.sqrt(1-beta_t) * (1 - alpha_sq_s) / (1 - alpha_sq_t)
         
-        # Calculate the posterior mean
+        # Calculate the posterior mean using the CLIPPED x0 prediction
         mu_lig = mu_x_coeff[ligand_mask] * x0_pred_lig + mu_zt_coeff[ligand_mask] * zt_lig
 
         # The posterior variance is also derived from the paper.
@@ -552,15 +548,25 @@ class ConditionalDDPM(EnVariationalDiffusion):
         lig_mask = utils.num_nodes_to_batch_mask(
             n_samples, num_nodes_lig, device)
 
-        # --- REFINEMENT START: Sample initial ligand noise from a simple N(0,I) ---
-        # The context (pocket) is now at the origin, so we can start the ligand there too.
-        z_lig = self.sample_gaussian(
+        
+        # 1. Sample standard Gaussian noise for the entire ligand representation (coordinates + features)
+        z_lig_raw = self.sample_gaussian(
             size=(len(lig_mask), self.n_dims + self.atom_nf),
             device=lig_mask.device
         )
+
+        # 2. Explicitly make the coordinate part of the noise CoM-free.
+        z_coords_raw = z_lig_raw[:, :self.n_dims]
+        z_com = torch_scatter.scatter_mean(z_coords_raw, lig_mask, dim=0)
+        z_coords_com_free = z_coords_raw - z_com[lig_mask]
+
+        # 3. Recombine the CoM-free coordinates with the standard feature noise.
+        # This is now a valid z_T sample from the correct distribution.
+        z_lig = torch.cat([z_coords_com_free, z_lig_raw[:, self.n_dims:]], dim=1)
+        
         # The initial pocket is already centered.
         xh_pocket = xh0_pocket
-        # --- REFINEMENT END ---
+        # --- FIX ENDS HERE ---
 
         out_lig = torch.zeros((return_frames,) + z_lig.size(),
                                 device=z_lig.device)
@@ -610,15 +616,7 @@ class ConditionalDDPM(EnVariationalDiffusion):
         translation_vector = pocket_com_original - pocket_com_final
         x_lig = x_lig + translation_vector[lig_mask]
         x_pocket = x_pocket + translation_vector[pocket['mask']]
-        # --- END: CORRECTED CoG DRIFT CHECK AND FIX ---
-
-
-        # --- REMOVED ---
-        # The entire (and incorrect) second drift correction block that started
-        # with `if return_frames == 1:` has been removed.
-        # --- END REMOVED ---
         
-
         # Overwrite last frame with the resulting x and h.
         out_lig[0] = torch.cat([x_lig, h_lig], dim=1)
         out_pocket[0] = torch.cat([x_pocket, h_pocket], dim=1)
@@ -796,8 +794,50 @@ class SimpleConditionalDDPM(ConditionalDDPM):
     @staticmethod
     def assert_mean_zero_with_mask(x, node_mask, eps=1e-10):
         return
+    
+    def noised_representation(self, xh_lig, xh0_pocket, lig_mask, pocket_mask,
+                              gamma_t):
+        """
+        Overrides parent method to NOT use COM-free noise,
+        which is the whole point of SimpleConditionalDDPM.
+        """
+        # Compute alpha_t and sigma_t from gamma.
+        alpha_t = self.alpha(gamma_t, xh_lig)
+        sigma_t = self.sigma(gamma_t, xh_lig)
 
-    def forward(self, ligand, pocket, return_info=False):
+        # 1. Sample standard N(0,I) noise (NOT COM-free)
+        eps_lig = self.sample_gaussian(
+            size=(len(lig_mask), self.n_dims + self.atom_nf),
+            device=lig_mask.device
+        )
+
+        # 2. Sample z_t given x, h for timestep t, from q(z_t | x, h)
+        z_t_lig = alpha_t[lig_mask] * xh_lig + sigma_t[lig_mask] * eps_lig
+        
+        xh_pocket = xh0_pocket.detach().clone()
+        
+        # Return the standard noise, not COM-free noise
+        return z_t_lig, xh_pocket, eps_lig
+
+    def sample_normal_com_free_ligand(self, mu_lig, sigma, lig_mask, fix_noise=False):
+        """
+        Overrides parent method to NOT use COM-free noise.
+        Name is now misleading, but it overrides the parent.
+        """
+        if fix_noise:
+            raise NotImplementedError("fix_noise option isn't implemented yet")
+
+        # 1. Sample standard Gaussian noise
+        eps_lig = self.sample_gaussian(
+            size=(len(lig_mask), self.n_dims + self.atom_nf),
+            device=lig_mask.device)
+
+        # 2. Apply the mean and variance
+        out_lig = mu_lig + sigma[lig_mask] * eps_lig
+
+        return out_lig
+
+    def forward(self, ligand, pocket, return_info=False, return_loss_terms=False):
 
         # Subtract pocket center of mass
         pocket_com = scatter_mean(pocket['x'], pocket['mask'], dim=0)
@@ -805,7 +845,7 @@ class SimpleConditionalDDPM(ConditionalDDPM):
         pocket['x'] = pocket['x'] - pocket_com[pocket['mask']]
 
         return super(SimpleConditionalDDPM, self).forward(
-            ligand, pocket, return_info)
+            ligand, pocket, return_info=return_info, return_loss_terms=return_loss_terms)
 
     @torch.no_grad()
     def sample_given_pocket(self, pocket, num_nodes_lig, return_frames=1,
