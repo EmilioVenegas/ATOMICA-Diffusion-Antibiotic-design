@@ -459,13 +459,14 @@ class SE3CrossAttention(nn.Module):
         edge_feat_nf = edge_feat_nf + in_edge_nf
         
         # This is the original, correct implementation that expects features to be embedded BEFORE this module is called.
-        self.embedding_q = nn.Linear(in_node_nf_q, self.hidden_nf)
-        self.embedding_kv = nn.Linear(in_node_nf_kv, self.hidden_nf)
-        self.embedding_out = nn.Linear(self.hidden_nf, out_node_nf)
+        #self.embedding_q = nn.Linear(in_node_nf_q, self.hidden_nf)
+        #self.embedding_kv = nn.Linear(in_node_nf_kv, self.hidden_nf)
+        
+        self.embedding_out = nn.Linear(in_node_nf_q, out_node_nf)
         
         for i in range(n_layers):
             self.add_module(f"e_block_{i}", CrossEquivariantBlock(
-                hidden_nf_q=self.hidden_nf, hidden_nf_kv=self.hidden_nf, edge_feat_nf=edge_feat_nf, device=device,
+                hidden_nf_q=in_node_nf_q, hidden_nf_kv=in_node_nf_kv, edge_feat_nf=edge_feat_nf, device=device,
                 act_fn=act_fn, n_layers=inv_sublayers, attention=attention, norm_diff=norm_diff, tanh=tanh,
                 coords_range=coords_range, norm_constant=norm_constant, sin_embedding=self.sin_embedding,
                 normalization_factor=self.normalization_factor, aggregation_method=self.aggregation_method,
@@ -474,8 +475,11 @@ class SE3CrossAttention(nn.Module):
 
     def forward(self, h_q, x_q, h_kv, x_kv, edge_index, node_mask_q=None, edge_mask=None,
                 batch_mask=None, edge_attr=None):
-        h_q_emb = self.embedding_q(h_q)
-        h_kv_emb = self.embedding_kv(h_kv)
+        # Double embedding removed to allow pre-embedded features to be passed directly.
+        #h_q_emb = self.embedding_q(h_q)
+        h_q_emb = h_q
+        #h_kv_emb = self.embedding_kv(h_kv)
+        h_kv_emb = h_kv
         
         for i in range(self.n_layers):
             h_q_emb, x_q = self._modules[f"e_block_{i}"](
