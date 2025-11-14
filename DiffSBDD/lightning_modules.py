@@ -186,10 +186,12 @@ class LigandPocketDDPM(pl.LightningModule):
         if self.pocket_representation == 'atomica':
             # aa_nf is now the dimension of the ATOMICA embeddings
             try:
-                self.aa_nf = egnn_params.atomica_embed_dim
-            except AttributeError:
-                raise AttributeError("egnn_params must include 'atomica_embed_dim' "
-                                     "when pocket_representation is 'atomica'")
+                embed_dim = egnn_params.atomica_embed_dim
+                one_hot_dim = egnn_params.atomica_one_hot_dim
+                self.aa_nf = embed_dim + one_hot_dim # e.g., 32 + 9 = 41
+            except AttributeError as e:
+                raise AttributeError(f"egnn_params must include 'atomica_embed_dim' "
+                                     f"and 'atomica_one_hot_dim'. Error: {e}")
         else:
             self.aa_nf = len(self.pocket_type_decoder)
             
@@ -283,31 +285,17 @@ class LigandPocketDDPM(pl.LightningModule):
         optimizer = torch.optim.AdamW(
             self.ddpm.parameters(), lr=self.lr, amsgrad=True, weight_decay=1e-12)
 
-        # Define a linear warmup schedule
-        def warmup_lambda(current_step):
-            if current_step < self.hparams.warmup_steps:
-                return float(current_step) / float(max(1, self.hparams.warmup_steps))
-            return 1.0
-
-        warmup_scheduler = LambdaLR(optimizer, lr_lambda=warmup_lambda)
-        
-        # Define the plateau scheduler that takes over after the warmup
+        # Define ONLY the plateau scheduler
         plateau_scheduler = ReduceLROnPlateau(
             optimizer, 'min', factor=0.8, patience=10, verbose=True
-        )
-
-        # Chain the schedulers
-        scheduler = SequentialLR(
-            optimizer,
-            schedulers=[warmup_scheduler, plateau_scheduler],
-            milestones=[self.hparams.warmup_steps] # The step number to switch from warmup to plateau
         )
         
         return {
             "optimizer": optimizer,
             "lr_scheduler": {
-                "scheduler": scheduler,
-                "monitor": "loss/val",
+                "scheduler": plateau_scheduler,
+                "monitor": "loss/val",  # This is what it will monitor
+                "interval": "epoch",    # It will step at the end of each epoch
             },
         }
 
@@ -368,19 +356,22 @@ class LigandPocketDDPM(pl.LightningModule):
             ligand['num_virtual_atoms'] = data['num_virtual_atoms'].to(
                 self.device, INT_TYPE)
         
-        # --- MODIFIED: Use pocket_atomica_embeddings if specified ---
         if self.pocket_representation == 'atomica':
-            pocket_features = data['pocket_atomica_embeddings'].to(self.device, FLOAT_TYPE)
+            # --- Load both embedding and one-hot features ---
+            embed_feats = data['pocket_atomica_embeddings'].to(self.device, FLOAT_TYPE)
+            one_hot_feats = data['pocket_one_hot'].to(self.device, FLOAT_TYPE)
+            
+            # --- Concatenate features ---
+            pocket_features = torch.cat([embed_feats, one_hot_feats], dim=1)
         else:
             pocket_features = data['pocket_one_hot'].to(self.device, FLOAT_TYPE)
             
         pocket = {
             'x': data['pocket_coords'].to(self.device, FLOAT_TYPE),
-            'one_hot': pocket_features, # This is either one-hot or embeddings
+            'one_hot': pocket_features, # This now contains the concatenated features
             'size': data['num_pocket_nodes'].to(self.device, INT_TYPE),
             'mask': data['pocket_mask'].to(self.device, INT_TYPE)
         }
-        # --- END MODIFICATION ---
         return ligand, pocket
 
     def forward(self, data):
@@ -430,7 +421,7 @@ class LigandPocketDDPM(pl.LightningModule):
         if hasattr(self.hparams, 'auxiliary_loss') and self.hparams.auxiliary_loss and self.training:
             weighted_lj_repulsion = \
                 self.auxiliary_weight_schedule(t_int.long()) * \
-                self.lj_potential(x_lig_hat, h_lig_hat, ligand['mask'])
+                self.lj_potential_repulsive_only(x_lig_hat, h_lig_hat, ligand['mask'])
             nll = nll + weighted_lj_repulsion
             info['weighted_lj'] = weighted_lj_repulsion.mean(0)
         
@@ -456,6 +447,7 @@ class LigandPocketDDPM(pl.LightningModule):
         # Compute pair-wise potentials
         dist = torch.sum((atom_x[edges[0]] - atom_x[edges[1]])**2, dim=1)
         r = torch.sqrt(dist + 1e-8) # Add epsilon for stability
+        r = torch.clamp(r, min=0.1)
 
         # Get optimal radii from Lennard-Jones parameters
         lennard_jones_radii = torch.tensor(self.lj_rm, device=r.device) / 100.0
@@ -481,8 +473,8 @@ class LigandPocketDDPM(pl.LightningModule):
         out = scatter_add(out, edges[0], dim=0, dim_size=len(atom_x))
         
         # Clamp the maximum repulsion to prevent explosions from very close atoms
-        if self.clamp_lj is not None:
-            out = torch.clamp(out, min=None, max=self.clamp_lj)
+        #if self.clamp_lj is not None:
+        #    out = torch.clamp(out, min=None, max=self.clamp_lj)
         
         return scatter_add(out, batch_mask, dim=0)
     
@@ -520,8 +512,8 @@ class LigandPocketDDPM(pl.LightningModule):
         # Compute potential per atom
         out = scatter_add(out, edges[0], dim=0, dim_size=len(atom_x))
 
-        if self.clamp_lj is not None:
-            out = torch.clamp(out, min=None, max=self.clamp_lj)
+        #if self.clamp_lj is not None:
+        #    out = torch.clamp(out, min=None, max=self.clamp_lj)
         
         # Sum potentials of all atoms
         return scatter_add(out, batch_mask, dim=0)
@@ -600,7 +592,19 @@ class LigandPocketDDPM(pl.LightningModule):
 
         loss = nll.mean(0)
         info['loss'] = loss
-        self.log_metrics(info, 'train', batch_size=len(data['num_lig_atoms']))
+        self.log(
+            'loss/train', 
+            loss, 
+            prog_bar=True, 
+            batch_size=len(data['num_lig_atoms'])
+        )
+        info_to_log = info.copy()
+        if 'loss' in info_to_log:
+            del info_to_log['loss']
+        # --- END NEW FIX ---
+
+        # The line below logs all other metrics ('weighted_lj', 'error_t_lig', etc.)
+        self.log_metrics(info_to_log, 'train', batch_size=len(data['num_lig_atoms']))
         return info
     
     def _shared_eval(self, data, prefix, *args):
@@ -627,8 +631,19 @@ class LigandPocketDDPM(pl.LightningModule):
         
         loss = nll.mean(0)
         info['loss'] = loss
-        self.log_metrics(info, prefix, batch_size=len(data['num_lig_atoms']),
-                        sync_dist=True)
+        self.log(
+            f'loss/{prefix}', 
+            loss, 
+            prog_bar=True, 
+            batch_size=len(data['num_lig_atoms']), 
+            sync_dist=True
+            
+        )
+        info_to_log = info.copy()
+        if 'loss' in info_to_log:
+            del info_to_log['loss']
+        # Log all other metrics without the progress bar
+        self.log_metrics(info_to_log, 'train', batch_size=len(data['num_lig_atoms']))
 
         return info
     def validation_step(self, data, *args):
@@ -639,7 +654,16 @@ class LigandPocketDDPM(pl.LightningModule):
     
     
     def on_before_optimizer_step(self, optimizer):
-        # STABILITY FIX: Log gradient norms
+        # --- NEW: Manual LR Warmup Logic ---
+        if self.trainer.global_step < self.hparams.warmup_steps:
+            # Calculate the learning rate scale (e.g., step 1/10, 2/10, ...)
+            lr_scale = float(self.trainer.global_step + 1) / float(self.hparams.warmup_steps)
+            
+            # Manually set the learning rate for this step
+            base_lr = self.hparams.lr 
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = base_lr * lr_scale
+        
         total_norm = 0.0
         for p in self.parameters():
             if p.grad is not None:

@@ -178,6 +178,36 @@ def process_complex(line, atomica_model, device, clash_threshold):
         atomica_output = atomica_model.infer(atomica_batch)
     
     pocket_atomica_embeddings = atomica_output.unit_repr.cpu().numpy()
+    # --- Filter pocket atoms to match DRUGLIKE vocabulary ---
+    # This logic is duplicated from the ligand processing block
+    try:
+        # 1. Map ATOMICA indices (e.g., 0-120) to DRUGLIKE indices (0-8 or -1)
+        remapped_pocket_indices = ATOMICA_TO_DRUGLIKE_MAP[pocket_atom_types]
+
+        # 2. Create a mask to find *valid* atoms (where index is not -1)
+        valid_pocket_mask = (remapped_pocket_indices != -1)
+
+        # 3. Check if any pocket atoms remain
+        if valid_pocket_mask.sum() == 0:
+            # print(f"Skipping complex {complex_id}: No valid drug-like pocket atoms found after filtering.")
+            return None
+
+        # 4. Filter ALL pocket-related arrays to keep them in sync
+        filtered_pocket_coords = pocket_coords[valid_pocket_mask]
+        filtered_pocket_embeddings = pocket_atomica_embeddings[valid_pocket_mask]
+        filtered_pocket_indices = remapped_pocket_indices[valid_pocket_mask]
+        
+        # 5. Create one-hot encoding using the *new* vocab size and *filtered* indices
+        pocket_one_hot = np.eye(DRUGLIKE_VOCAB_SIZE, dtype=np.float32)[filtered_pocket_indices]
+
+    except IndexError as e:
+        # This can happen if pocket_atom_types has an invalid index
+        print(f"ERROR during POCKET atom remapping/one-hot encoding for {complex_id}: {e}")
+        print(f"Original max index: {np.max(pocket_atom_types)}, Map size: {len(ATOMICA_TO_DRUGLIKE_MAP)}")
+        return None
+    except Exception as e:
+        print(f"Unhandled ERROR during POCKET atom remapping for {complex_id}: {e}")
+        return None
 
     # Save data, with error handling
     try:
@@ -214,8 +244,9 @@ def process_complex(line, atomica_model, device, clash_threshold):
     new_data = {
         'lig_coords': filtered_ligand_coords.astype(np.float32),
         'lig_one_hot': ligand_one_hot,
-        'pocket_coords': pocket_coords.astype(np.float32),
-        'pocket_atomica_embeddings': pocket_atomica_embeddings.astype(np.float32),
+        'pocket_coords': filtered_pocket_coords.astype(np.float32),          
+        'pocket_atomica_embeddings': filtered_pocket_embeddings.astype(np.float32), 
+        'pocket_one_hot': pocket_one_hot.astype(np.float32),               
         'name': complex_id
     }
 
@@ -314,3 +345,4 @@ if __name__ == "__main__":
         
     main(args)
 
+# python process_atomica_jsonl.py --input_file PLjsonl.gz --output_dir processed_atomica_pocketcoords --model_config ATOMICA/pretrain/pretrain_model_config.json --model_weights ATOMICA/pretrain/pretrain_model_weights.pt --clash_threshold 0.5
