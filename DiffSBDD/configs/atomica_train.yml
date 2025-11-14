@@ -1,79 +1,81 @@
-run_name: 'stable-v16' # New run name
+run_name: 'pocketcoords-repulsive-v1'
 logdir: './my_logs'
 wandb_params:
   mode: 'disabled'
   entity: 'my_username'
   group: 'atomica'
+
 dataset: 'atomica_PL'
-datadir: data/processed_atomica_antibiotic_filtered/
+datadir: data/processed_atomica_filtered_pocketcoords2/
 atomica_model_config: ATOMICA/pretrain/pretrain_model_config.json
 atomica_model_weights: ATOMICA/pretrain/pretrain_model_weights.pt
 enable_progress_bar: True
 num_sanity_val_steps: 0
 
+# --- MODEL AND TRAINING PARAMS ---
 mode: 'pocket_conditioning'
 pocket_representation: 'atomica'
-batch_size: 4
-lr: 5.0e-5 # Slightly lower LR, relying on scheduler
-noise_factor: 1.0
+batch_size: 48
+lr: 1.0e-4 
 n_epochs: 1000
 num_workers: 8
 gpus: 1
 strategy: 'auto'
 clip_grad: True
 augment_rotation: False
-warmup_steps: 200
+warmup_steps: 500
 
-
-augment_noise: 0.01 # Reduced jitter
+augment_noise: 0.001
 accumulate_grad_batches: 8
 gradient_clip_algorithm: 'norm'
-gradient_clip_val: 1.0 #  Relaxed
+gradient_clip_val: 0.1
 
 # parameter to prioritize geometry
-coord_loss_weight: 10.0
+coord_loss_weight: 1.0
 
-auxiliary_loss: True
+auxiliary_loss: False
 loss_params:
-  max_weight: 0.00001
+  max_weight: 0.0001
   schedule: 'linear'
-  clamp_lj: 5.0
+  clamp_lj: 100.0
 
 bond_params:
-  enabled: True
-  max_weight: 2.0   # A strong signal to force bonds
+  enabled: False # 
+  max_weight: 0.01  # A strong signal to force bonds
   target_length: 1.7  # Average covalent bond length in Angstroms
   cutoff_radius: 3.0  # Apply the loss to any pair of atoms closer than 3.0 A
   clamp_b: 5.0       # Clamp the bond potential to avoid huge losses
 
+# --- EGNN (DYNAMICS) PARAMS ---
 egnn_params:
   #context_nf: 512
   device: 'cuda'
-  edge_cutoff_ligand: 5.0 # Set explicit cutoffs
-  #edge_cutoff_pocket: 5.0
-  edge_cutoff_interaction: 5.0
+  edge_cutoff_ligand: null
+  edge_cutoff_interaction: 7.0
   reflection_equivariant: True
   atomica_embed_dim: 32
-  #joint_nf: 128
+  atomica_one_hot_dim: 9
   hidden_nf: 128
-  n_layers: 4 
+  n_layers: 6
   attention: True
-  tanh: False  
-  coords_range: 15.0
-  norm_constant: 1.0 # Ensure this is a float
+  tanh: True
+  coords_range: 10.0
+  norm_constant: 1.0
   inv_sublayers: 1
   sin_embedding: False
   aggregation_method: 'mean' #mean is more stable
-  normalization_factor: 1.0 # Not used for 'mean', but set to 1 for safety
+  normalization_factor: 1 # Not used for 'mean', but set to 1 for safety
   edge_embedding_dim: 32
 
+# --- DIFFUSION PARAMS ---
 diffusion_params:
   diffusion_steps: 500
   diffusion_noise_schedule: 'polynomial_2'
-  diffusion_noise_precision: 1.0e-4 # Slightly higher precision
+  diffusion_noise_precision: 1.0e-4
   diffusion_loss_type: 'l2'
-  normalize_factors: [1.0, 1.0] 
+  normalize_factors: [1.0, 1.0]
 
+# --- EVALUATION PARAMS ---
 eval_epochs: 50
 visualize_sample_epoch: 50
 visualize_chain_epoch: 50
