@@ -118,7 +118,7 @@ def plot_molecule(ax, positions, atom_type, alpha, spheres_3d, hex_bg_color,
     safe_atom_type = np.clip(atom_type, 0, max_atom_index)
     
     radius_dic = np.array(dataset_info['radius_dic'])
-    area_dic = 200 * radius_dic ** 2
+    area_dic = 50 * radius_dic ** 2
     radii = radius_dic[safe_atom_type]
     areas = area_dic[safe_atom_type]
 
@@ -183,7 +183,7 @@ def plot_molecule(ax, positions, atom_type, alpha, spheres_3d, hex_bg_color,
                     c=hex_bg_color, alpha=alpha)
 
 
-# --- MODIFIED FUNCTION ---
+# --- MODIFIED FUNCTION (now with two views) ---
 def plot_molecule_and_pocket(
     positions_lig, atom_type_lig, positions_pocket, atom_type_pocket,
     dataset_info, camera_elev=0, camera_azim=0, save_path=None,
@@ -193,57 +193,78 @@ def plot_molecule_and_pocket(
     white = (1, 1, 1)
     
     from mpl_toolkits.mplot3d import Axes3D
-    fig = plt.figure()
-    ax = fig.add_subplot(projection='3d')
-    ax.set_aspect('auto')
-    ax.view_init(elev=camera_elev, azim=camera_azim)
-    
+    # Make the figure wider to accommodate two plots
+    fig = plt.figure(figsize=(10, 5)) 
+
+    # --- Create two 3D subplots ---
+    ax1 = fig.add_subplot(1, 2, 1, projection='3d')
+    ax2 = fig.add_subplot(1, 2, 2, projection='3d')
+
     if bg == 'black':
-        ax.set_facecolor(black)
-        ax.xaxis.line.set_color("black")
         ligand_bond_color = '#FFFFFF'
     else:
-        ax.set_facecolor(white)
-        ax.xaxis.line.set_color("white")
         ligand_bond_color = '#666666'
 
-    ax.xaxis.pane.set_alpha(0)
-    ax.yaxis.pane.set_alpha(0)
-    ax.zaxis.pane.set_alpha(0)
-    ax._axis3don = False
+    # --- Apply settings to BOTH axes ---
+    for i, ax in enumerate([ax1, ax2]):
+        ax.set_aspect('auto')
+        
+        # Set the view for each axis
+        if i == 0:
+            ax.view_init(elev=camera_elev, azim=camera_azim)
+            ax.set_title("Front View", color=ligand_bond_color) # Add title
+        else:
+            # Rotate the 2nd view by 90 degrees
+            ax.view_init(elev=camera_elev, azim=camera_azim + 90) 
+            ax.set_title("Side View (90°)", color=ligand_bond_color) # Add title
 
-    # 1. Plot the pocket first with gray colors and lower alpha
-    pocket_color = '#808080' # Gray
-    plot_molecule(ax, positions_pocket, atom_type_pocket, alpha=0.4,
-                  spheres_3d=spheres_3d, hex_bg_color=pocket_color,
-                  dataset_info=dataset_info, override_color=pocket_color)
+        if bg == 'black':
+            ax.set_facecolor(black)
+            ax.xaxis.line.set_color("black")
+        else:
+            ax.set_facecolor(white)
+            ax.xaxis.line.set_color("white")
 
-    # 2. Plot the ligand on top with its original colors
-    plot_molecule(ax, positions_lig, atom_type_lig, alpha=1.0,
-                  spheres_3d=spheres_3d, hex_bg_color=ligand_bond_color,
-                  dataset_info=dataset_info, override_color=None)
+        ax.xaxis.pane.set_alpha(0)
+        ax.yaxis.pane.set_alpha(0)
+        ax.zaxis.pane.set_alpha(0)
+        ax._axis3don = False
 
-    # Set axis limits based on the combined system
+        # --- Plot pocket and ligand on this axis ---
+        # 1. Plot the pocket first (grayed out)
+        pocket_color = '#808080' # Gray
+        plot_molecule(ax, positions_pocket, atom_type_pocket, alpha=0.4,
+                      spheres_3d=spheres_3d, hex_bg_color=pocket_color,
+                      dataset_info=dataset_info, override_color=pocket_color)
+
+        # 2. Plot the ligand on top (full color)
+        plot_molecule(ax, positions_lig, atom_type_lig, alpha=1.0,
+                      spheres_3d=spheres_3d, hex_bg_color=ligand_bond_color,
+                      dataset_info=dataset_info, override_color=None)
+
+    # --- Set axis limits for BOTH axes ---
     all_positions = torch.cat([positions_lig, positions_pocket], dim=0)
     max_value = all_positions.abs().max().item()
     axis_lim = min(40, max(max_value / 1.5 + 0.3, 3.2))
-    ax.set_xlim(-axis_lim, axis_lim)
-    ax.set_ylim(-axis_lim, axis_lim)
-    ax.set_zlim(-axis_lim, axis_lim)
+    
+    ax1.set_xlim(-axis_lim, axis_lim)
+    ax1.set_ylim(-axis_lim, axis_lim)
+    ax1.set_zlim(-axis_lim, axis_lim)
+    
+    ax2.set_xlim(-axis_lim, axis_lim)
+    ax2.set_ylim(-axis_lim, axis_lim)
+    ax2.set_zlim(-axis_lim, axis_lim)
 
     dpi = 120 if spheres_3d else 50
 
     if save_path is not None:
-        plt.savefig(save_path, bbox_inches='tight', pad_inches=0.0, dpi=dpi)
-        
-        # --- REMOVED ---
-        # The np.clip(img * 1.4, ...) hack is no longer needed
-        # because the LightSource in draw_sphere provides better lighting.
-        
+        # Save the entire figure (which now contains both plots)
+        plt.savefig(save_path, bbox_inches='tight', pad_inches=0.0, dpi=dpi,
+                    facecolor=fig.get_facecolor(), edgecolor='none')
     else:
         plt.show()
     plt.close()
-
+    
 
 # --- MODIFIED FUNCTION ---
 def plot_data3d(positions, atom_type, dataset_info, camera_elev=0,
@@ -510,7 +531,7 @@ if __name__ == '__main__':
             atom_type = torch.argmax(one_hot, dim=1).numpy()
 
             plot_data3d(
-                positions_centered, atom_type, dataset_info=dataset_info,
+                positions_centered, atom_type, dataset_info=dataset_info,   
                 spheres_3d=True)
 
     elif task_dataset == 'geom':
