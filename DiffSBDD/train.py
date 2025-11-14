@@ -153,8 +153,8 @@ if __name__ == "__main__":
         devices=args.gpus,
         strategy=args.strategy,
         # CRITICAL: Much more aggressive gradient clipping
-        gradient_clip_val=0.5,  # Reduced from 1.0
-        gradient_clip_algorithm='value',
+        gradient_clip_val=args.gradient_clip_val,
+        gradient_clip_algorithm=args.gradient_clip_algorithm,
         log_every_n_steps=1,
         accumulate_grad_batches=args.accumulate_grad_batches,
         # CRITICAL: Detect NaN gradients
