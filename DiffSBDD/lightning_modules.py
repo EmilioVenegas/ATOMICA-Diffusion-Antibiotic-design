@@ -17,12 +17,10 @@ from Bio.PDB import PDBParser
 
 
 from constants import dataset_params, FLOAT_TYPE, INT_TYPE
-from equivariant_diffusion.dynamics import EGNNDynamics
+
 # --- NEW: Import AtomicaDynamics ---
 from equivariant_diffusion.dynamics import AtomicaDynamics
-from equivariant_diffusion.en_diffusion import EnVariationalDiffusion
-from equivariant_diffusion.conditional_model import ConditionalDDPM, \
-    SimpleConditionalDDPM
+from equivariant_diffusion.conditional_model import ConditionalDDPM
 from dataset import ProcessedLigandPocketDataset
 import utils
 from analysis.visualization import save_xyz_file, visualize, visualize_chain
@@ -96,9 +94,7 @@ class LigandPocketDDPM(pl.LightningModule):
         self.save_hyperparameters()
         
 
-        ddpm_models = {'joint': EnVariationalDiffusion,
-                       'pocket_conditioning': ConditionalDDPM,
-                       'pocket_conditioning_simple': SimpleConditionalDDPM}
+        ddpm_models = {'pocket_conditioning': ConditionalDDPM}
         assert mode in ddpm_models
         self.mode = mode
         # --- MODIFIED: Add 'atomica' as a valid representation ---
@@ -129,16 +125,7 @@ class LigandPocketDDPM(pl.LightningModule):
         self.warmup_steps = warmup_steps # Store it
         
         # --- MODIFIED: Handle 'atomica' representation ---
-        if self.pocket_representation == 'CA':
-            self.pocket_type_encoder = self.dataset_info['aa_encoder']
-            self.pocket_type_decoder = self.dataset_info['aa_decoder']
-        elif self.pocket_representation == 'full-atom':
-            self.pocket_type_encoder = self.dataset_info['atom_encoder']
-            self.pocket_type_decoder = self.dataset_info['atom_decoder']
-        elif self.pocket_representation == 'atomica':
-            # Encoders/Decoders are not used, pocket features are embeddings
-            self.pocket_type_encoder = None
-            self.pocket_type_decoder = None
+        
 
         smiles_list = None if eval_params.smiles_file is None \
             else np.load(eval_params.smiles_file)
@@ -149,11 +136,7 @@ class LigandPocketDDPM(pl.LightningModule):
             self.dataset_info['atom_hist'], self.lig_type_encoder)
         
         # --- MODIFIED: Handle 'atomica' representation ---
-        if self.pocket_representation == 'CA':
-            self.pocket_type_distribution = CategoricalDistribution(
-                self.dataset_info['aa_hist'], self.pocket_type_encoder)
-        else: # 'full-atom' or 'atomica'
-            self.pocket_type_distribution = None
+    
 
         self.train_dataset = None
         self.val_dataset = None
@@ -221,32 +204,7 @@ class LigandPocketDDPM(pl.LightningModule):
                 edge_embedding_dim=egnn_params.__dict__.get('edge_embedding_dim')
             
             )
-        else:
-            print("Using EGNNDynamics (Original Model)")
-            net_dynamics = EGNNDynamics(
-                atom_nf=self.atom_nf,
-                residue_nf=self.aa_nf,
-                n_dims=self.x_dims,
-                joint_nf=egnn_params.joint_nf,
-                device=egnn_params.device if torch.cuda.is_available() else 'cpu',
-                hidden_nf=egnn_params.hidden_nf,
-                act_fn=torch.nn.SiLU(),
-                n_layers=egnn_params.n_layers,
-                attention=egnn_params.attention,
-                tanh=egnn_params.tanh,
-                norm_constant=egnn_params.norm_constant,
-                inv_sublayers=egnn_params.inv_sublayers,
-                sin_embedding=egnn_params.sin_embedding,
-                normalization_factor=egnn_params.normalization_factor,
-                aggregation_method=egnn_params.aggregation_method,
-                edge_cutoff_ligand=egnn_params.__dict__.get('edge_cutoff_ligand'),
-                edge_cutoff_pocket=egnn_params.__dict__.get('edge_cutoff_pocket'),
-                edge_cutoff_interaction=egnn_params.__dict__.get('edge_cutoff_interaction'),
-                update_pocket_coords=(self.mode == 'joint'),
-                reflection_equivariant=egnn_params.reflection_equivariant,
-                edge_embedding_dim=egnn_params.__dict__.get('edge_embedding_dim'),
-            )
-        
+              
 
         self.ddpm = ddpm_models[self.mode](
                 dynamics=net_dynamics,
@@ -473,8 +431,8 @@ class LigandPocketDDPM(pl.LightningModule):
         out = scatter_add(out, edges[0], dim=0, dim_size=len(atom_x))
         
         # Clamp the maximum repulsion to prevent explosions from very close atoms
-        #if self.clamp_lj is not None:
-        #    out = torch.clamp(out, min=None, max=self.clamp_lj)
+        if self.clamp_lj is not None:
+            out = torch.clamp(out, min=None, max=self.clamp_lj)
         
         return scatter_add(out, batch_mask, dim=0)
     
@@ -707,42 +665,6 @@ class LigandPocketDDPM(pl.LightningModule):
             print(f'Chain visualization took {time() - tic:.2f} seconds')
 
     @torch.no_grad()
-    def sample_and_analyze(self, n_samples, dataset=None, batch_size=None):
-        print(f'Analyzing sampled molecules at epoch {self.current_epoch}...')
-
-        batch_size = self.batch_size if batch_size is None else batch_size
-        batch_size = min(batch_size, n_samples)
-
-        # each item in molecules is a tuple (position, atom_type_encoded)
-        molecules = []
-        atom_types = []
-        aa_types = []
-        for i in range(math.ceil(n_samples / batch_size)):
-
-            n_samples_batch = min(batch_size, n_samples - len(molecules))
-
-            num_nodes_lig, num_nodes_pocket = \
-                self.ddpm.size_distribution.sample(n_samples_batch)
-
-            xh_lig, xh_pocket, lig_mask, _ = self.ddpm.sample(
-                n_samples_batch, num_nodes_lig, num_nodes_pocket,
-                device=self.device)
-
-            x = xh_lig[:, :self.x_dims].detach().cpu()
-            atom_type = xh_lig[:, self.x_dims:].argmax(1).detach().cpu()
-            lig_mask = lig_mask.cpu()
-
-            molecules.extend(list(
-                zip(utils.batch_to_list(x, lig_mask),
-                    utils.batch_to_list(atom_type, lig_mask))
-            ))
-
-            atom_types.extend(atom_type.tolist())
-            if self.pocket_representation != 'atomica':
-                aa_types.extend(
-                    xh_pocket[:, self.x_dims:].argmax(1).detach().cpu().tolist())
-
-        return self.analyze_sample(molecules, atom_types, aa_types)
 
     def analyze_sample(self, molecules, atom_types, aa_types, receptors=None):
         # Distribution of node types
