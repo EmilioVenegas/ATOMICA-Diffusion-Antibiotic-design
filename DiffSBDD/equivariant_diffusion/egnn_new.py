@@ -243,37 +243,6 @@ class EGNN(nn.Module):
         return h, x
 
 
-class GNN(nn.Module):
-    def __init__(self, in_node_nf, in_edge_nf, hidden_nf, aggregation_method='sum', device='cpu',
-                 act_fn=nn.SiLU(), n_layers=4, attention=False,
-                 normalization_factor=1, out_node_nf=None):
-        super(GNN, self).__init__()
-        # This class is not used by AtomicaDynamics but is kept for completeness.
-        if out_node_nf is None:
-            out_node_nf = in_node_nf
-        self.hidden_nf = hidden_nf
-        self.device = device
-        self.n_layers = n_layers
-        self.embedding = nn.Linear(in_node_nf, self.hidden_nf)
-        self.embedding_out = nn.Linear(self.hidden_nf, out_node_nf)
-        for i in range(0, n_layers):
-            self.add_module("gcl_%d" % i, GCL(
-                self.hidden_nf, self.hidden_nf, self.hidden_nf,
-                normalization_factor=normalization_factor,
-                aggregation_method=aggregation_method,
-                edges_in_d=in_edge_nf, act_fn=act_fn,
-                attention=attention))
-        self.to(self.device)
-
-    def forward(self, h, edges, edge_attr=None, node_mask=None, edge_mask=None):
-        h = self.embedding(h)
-        for i in range(0, self.n_layers):
-            h, _ = self._modules["gcl_%d" % i](h, edges, edge_attr=edge_attr, node_mask=node_mask, edge_mask=edge_mask)
-        h = self.embedding_out(h)
-        if node_mask is not None:
-            h = h * node_mask
-        return h
-
 
 class SinusoidsEmbeddingNew(nn.Module):
     def __init__(self, max_res=15., min_res=15. / 2000., div_factor=4):
