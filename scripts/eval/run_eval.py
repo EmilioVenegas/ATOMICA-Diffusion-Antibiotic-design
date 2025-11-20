@@ -78,7 +78,7 @@ print(f"Wrote template to {TEMPLATE_PATH}")
 
 
 import importlib
-import scripts.eval.random as random_module
+import scripts.eval.boltz_random as random_module
 
 importlib.reload(random_module)
 
