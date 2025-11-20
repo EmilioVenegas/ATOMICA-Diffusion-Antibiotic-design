@@ -31,8 +31,14 @@ def merge_args_and_yaml(args, config_dict):
     return args
 
 
-def merge_configs(config, resume_config):
+    # List of keys that should NOT be overwritten by the checkpoint
+    # This allows adjusting hardware-dependent parameters (like batch_size) when resuming
+    keys_to_keep = {'batch_size', 'num_workers', 'gpus', 'accumulate_grad_batches', 'gradient_clip_val'}
+
     for key, value in resume_config.items():
+        if key in keys_to_keep:
+            continue
+            
         if isinstance(value, Namespace):
             value = value.__dict__
         if key in config and config[key] != value:
@@ -77,10 +83,10 @@ if __name__ == "__main__":
     if 'atomica_model_weights' not in args:
         args.atomica_model_weights = None
         
-    if args.pocket_representation == 'atomica':
-        if 'atomica_embed_dim' not in args.egnn_params:
-            print("Warning: 'atomica_embed_dim' not in egnn_params. Defaulting to 128.")
-            args.egnn_params.atomica_embed_dim = 128
+    # Enforce atomica_embed_dim presence
+    if 'atomica_embed_dim' not in args.egnn_params:
+         print("Warning: 'atomica_embed_dim' not in egnn_params. Defaulting to 128.")
+         args.egnn_params.atomica_embed_dim = 128
     
 
     out_dir = Path(args.logdir, args.run_name)
@@ -124,7 +130,7 @@ if __name__ == "__main__":
 
     logger = pl.loggers.WandbLogger(
         save_dir=args.logdir,
-        project='ligand-pocket-ddpm',
+        project=args.wandb_params.project,
         group=args.wandb_params.group,
         name=args.run_name,
         id=args.run_name,
