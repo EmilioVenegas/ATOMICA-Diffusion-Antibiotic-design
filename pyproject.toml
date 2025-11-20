@@ -1,0 +1,22 @@
+ [tool.poetry]
+name = "atomica-diffusion-antibiotic-design"
+version = "0.1.0"
+description = "Research code for ATOMICA-based antibiotic design experiments"
+authors = ["Khaoula Belahsen <49695480+khaoulabelahsen@users.noreply.github.com>"]
+package-mode = false
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = ">=3.12,<3.13"
+torch = "2.2.2"
+boltz = "^2.2.1"
+matplotlib = "^3.10.7"
+openbabel-wheel = "^3.1.1.22"
+imageio = "^2.37.0"
+
+[tool.poetry.group.dev.dependencies]
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
