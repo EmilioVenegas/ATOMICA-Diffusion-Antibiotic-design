@@ -1,0 +1,8 @@
+Similarity Statistics (Debiased):
+  Mean: 0.0204
+  Std: 0.4728
+  Min: -0.9968
+  Max: 1.0000
+  Median: 0.0226
+  25th percentile: -0.3645
+  75th percentile: 0.4076
