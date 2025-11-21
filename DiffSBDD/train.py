@@ -31,6 +31,10 @@ def merge_args_and_yaml(args, config_dict):
     return args
 
 
+def merge_configs(config, resume_config):
+    """
+    Merge resume config with current config.
+    """
     # List of keys that should NOT be overwritten by the checkpoint
     # This allows adjusting hardware-dependent parameters (like batch_size) when resuming
     keys_to_keep = {'batch_size', 'num_workers', 'gpus', 'accumulate_grad_batches', 'gradient_clip_val'}
