@@ -1,0 +1,6 @@
+name,smiles
+sulbactam,CC1(C(=O)N2C1SCC2=O)S(=O)(=O)O
+cefiderocol,CC1=C(SC2=NN=C(N2C(=O)C3=CC=CC=C3)C(=O)N4CC5C(C4=O)S(=O)(=O)N(C5)C(=O)COC6=CC=C(C=C6)OCC7=CN=C(O7)C(=O)O)C(=O)N1CC8=CC=CC=C8
+aztreonam,CC(C)(C)N1C(=O)C(=O)N2C1SCC2=O
+ceftazidime,CC1=C(SC2=NOC(=C2N1C(=O)C3=CSC(=N3)N)C(=O)O)C(=O)NCCN4CCN(CC4)C(=O)CO
+piperacillin,CC1=C(SC2=NC(=O)C(=C2N1C(=O)C3=CC=CC=C3)NC(=O)C4CCCCC4)C(=O)NCCN5CCOCC5
