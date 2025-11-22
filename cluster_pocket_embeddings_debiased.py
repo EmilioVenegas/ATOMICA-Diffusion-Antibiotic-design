@@ -16,7 +16,6 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from collections import defaultdict
 import random
-import time
 
 def sample_atom_embeddings(directory, max_samples=100000, random_seed=42):
     """
@@ -30,7 +29,6 @@ def sample_atom_embeddings(directory, max_samples=100000, random_seed=42):
     Returns:
         sampled_embeddings: numpy array of shape (n_samples, embedding_dim)
     """
-    start_time = time.time()
     directory = Path(directory)
     pt_files = sorted(directory.glob("complex_*.pt"))
     
@@ -44,7 +42,6 @@ def sample_atom_embeddings(directory, max_samples=100000, random_seed=42):
     files_sampled = 0
     
     print(f"Sampling atom embeddings from {len(pt_files)} files...")
-    print(f"Estimated time: ~{len(pt_files) * 0.01:.1f} seconds (assuming ~0.01s per file)")
     for pt_file in tqdm(pt_files, desc="Sampling"):
         try:
             data = torch.load(pt_file, map_location='cpu')
@@ -82,9 +79,7 @@ def sample_atom_embeddings(directory, max_samples=100000, random_seed=42):
         indices = np.random.choice(sampled_embeddings.shape[0], max_samples, replace=False)
         sampled_embeddings = sampled_embeddings[indices]
     
-    elapsed = time.time() - start_time
     print(f"Sampled {sampled_embeddings.shape[0]} atom embeddings from {files_sampled} files")
-    print(f"Sampling took {elapsed:.2f} seconds")
     return sampled_embeddings
 
 def compute_global_stats(sampled_embeddings, n_components=3):
@@ -100,13 +95,11 @@ def compute_global_stats(sampled_embeddings, n_components=3):
         pca_components: Principal components (n_components, embedding_dim)
         pca: Fitted PCA object
     """
-    start_time = time.time()
     print(f"\nComputing global statistics from {sampled_embeddings.shape[0]} atom embeddings...")
     
     # Step A: Compute global mean
     print("Computing global mean...")
     mu_global = np.mean(sampled_embeddings, axis=0)
-    print(f"Global mean computed: shape {mu_global.shape} ({time.time() - start_time:.2f}s)")
     
     # Center embeddings
     print("Centering embeddings...")
@@ -114,20 +107,14 @@ def compute_global_stats(sampled_embeddings, n_components=3):
     
     # Compute PCA
     print(f"Computing PCA with {n_components} components...")
-    print(f"Estimated time: ~{sampled_embeddings.shape[0] * sampled_embeddings.shape[1] / 1e6:.1f} seconds")
-    pca_start = time.time()
     pca = PCA(n_components=n_components)
     pca.fit(centered_embeddings)
-    pca_time = time.time() - pca_start
     
     pca_components = pca.components_  # Shape: (n_components, embedding_dim)
     explained_variance = pca.explained_variance_ratio_
     
-    elapsed = time.time() - start_time
     print(f"PCA explained variance ratios: {explained_variance}")
     print(f"Total explained variance: {explained_variance.sum():.4f}")
-    print(f"PCA computation took {pca_time:.2f} seconds")
-    print(f"Total global stats computation: {elapsed:.2f} seconds")
     
     return mu_global, pca_components, pca
 
@@ -142,8 +129,7 @@ def debias_atom_embedding(x, mu_global, pca_components=None, remove_pcs=True):
         remove_pcs: Whether to remove principal components
     
     Returns:
-        x_debiased: Debias
-ed atom embedding vector (embedding_dim,)
+        x_debiased: Debiased atom embedding vector (embedding_dim,)
     """
     # Step B: Subtract global mean
     x_centered = x - mu_global
@@ -172,7 +158,6 @@ def load_and_debias_pocket_embeddings(directory, mu_global, pca_components, remo
         embeddings_dict: dict mapping file_name -> debiased aggregated embedding
         file_names: list of file names in order
     """
-    start_time = time.time()
     directory = Path(directory)
     pt_files = sorted(directory.glob("complex_*.pt"))
     
@@ -180,7 +165,6 @@ def load_and_debias_pocket_embeddings(directory, mu_global, pca_components, remo
     file_names = []
     
     print(f"\nLoading and debiasing embeddings from {len(pt_files)} files...")
-    print(f"Estimated time: ~{len(pt_files) * 0.05:.1f} seconds (assuming ~0.05s per file)")
     for pt_file in tqdm(pt_files, desc="Processing"):
         try:
             data = torch.load(pt_file, map_location='cpu')
@@ -217,45 +201,31 @@ def load_and_debias_pocket_embeddings(directory, mu_global, pca_components, remo
             print(f"Error processing {pt_file.name}: {e}")
             continue
     
-    elapsed = time.time() - start_time
     print(f"Successfully processed {len(embeddings_dict)} pockets")
-    print(f"Debiasing took {elapsed:.2f} seconds ({elapsed/len(embeddings_dict)*1000:.2f}ms per pocket)")
     return embeddings_dict, file_names
 
 def compute_similarity_matrix(embeddings_dict, file_names):
     """Compute cosine similarity matrix between debiased pocket embeddings."""
-    start_time = time.time()
     embeddings_array = np.array([embeddings_dict[name] for name in file_names])
     n_files = len(file_names)
     print(f"Embeddings array shape: {embeddings_array.shape} (num_files={n_files}, embedding_dim={embeddings_array.shape[1]})")
     
-    # Estimate time: O(n^2 * d) where n=files, d=embedding_dim
-    estimated_time = (n_files ** 2 * embeddings_array.shape[1]) / 1e8
-    print(f"Computing similarity matrix... (estimated: ~{estimated_time:.1f} seconds)")
-    
     similarity_matrix = cosine_similarity(embeddings_array)
-    elapsed = time.time() - start_time
     print(f"Similarity matrix shape: {similarity_matrix.shape}")
-    print(f"Similarity computation took {elapsed:.2f} seconds")
     return similarity_matrix
 
 def cluster_embeddings(embeddings_dict, file_names, method='kmeans', n_clusters=5, **kwargs):
     """Cluster debiased embeddings using specified method."""
-    start_time = time.time()
     embeddings_array = np.array([embeddings_dict[name] for name in file_names])
     n_files = len(file_names)
     
     if method == 'kmeans':
         # K-means is O(n * k * d * iterations), typically fast
-        estimated_time = (n_files * n_clusters * embeddings_array.shape[1]) / 1e7
-        print(f"Running K-means with {n_clusters} clusters... (estimated: ~{estimated_time:.1f} seconds)")
         clusterer = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
         labels = clusterer.fit_predict(embeddings_array)
     elif method == 'agglomerative':
         linkage = kwargs.get('linkage', 'ward')
         # Agglomerative is O(n^2) or O(n^2 log n), can be slow for large n
-        estimated_time = (n_files ** 2) / 1e6
-        print(f"Running Agglomerative clustering with {n_clusters} clusters... (estimated: ~{estimated_time:.1f} seconds)")
         print(f"  WARNING: This may be slow for {n_files} samples. Consider using kmeans for large datasets.")
         clusterer = AgglomerativeClustering(n_clusters=n_clusters, linkage=linkage)
         labels = clusterer.fit_predict(embeddings_array)
@@ -263,16 +233,31 @@ def cluster_embeddings(embeddings_dict, file_names, method='kmeans', n_clusters=
         eps = kwargs.get('eps', 0.5)
         min_samples = kwargs.get('min_samples', 5)
         # DBSCAN is typically O(n log n) with spatial indexing
-        estimated_time = (n_files * np.log2(max(n_files, 1))) / 1e5
-        print(f"Running DBSCAN... (estimated: ~{estimated_time:.1f} seconds)")
         clusterer = DBSCAN(eps=eps, min_samples=min_samples, metric='cosine')
         labels = clusterer.fit_predict(embeddings_array)
     else:
         raise ValueError(f"Unknown clustering method: {method}")
     
-    elapsed = time.time() - start_time
-    print(f"Clustering took {elapsed:.2f} seconds")
     return labels, clusterer
+
+def save_cluster_assignments(file_names, labels, output_path):
+    """
+    Save cluster assignments to a text file.
+    
+    Args:
+        file_names: List of file names
+        labels: Array of cluster labels corresponding to file_names
+        output_path: Path to output file
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    with open(output_path, 'w') as f:
+        f.write("file_name\tcluster_label\n")
+        for file_name, label in zip(file_names, labels):
+            f.write(f"{file_name}\t{label}\n")
+    
+    print(f"Cluster assignments saved to {output_path}")
 
 def visualize_clusters(embeddings_dict, file_names, labels, similarity_matrix, output_dir):
     """Create visualizations of the clustering results."""
@@ -281,42 +266,22 @@ def visualize_clusters(embeddings_dict, file_names, labels, similarity_matrix, o
     
     embeddings_array = np.array([embeddings_dict[name] for name in file_names])
     
-    # 1. Similarity heatmap
+    # Reorder similarity matrix by cluster labels for better visualization
+    sort_indices = np.argsort(labels)
+    similarity_matrix_ordered = similarity_matrix[sort_indices][:, sort_indices]
+    labels_ordered = labels[sort_indices]
+    
+    # Similarity heatmap (ordered by cluster)
     plt.figure(figsize=(12, 10))
-    sns.heatmap(similarity_matrix, cmap='viridis', square=True, 
+    sns.heatmap(similarity_matrix_ordered, cmap='viridis', square=True, 
                 xticklabels=False, yticklabels=False, cbar_kws={'label': 'Cosine Similarity'})
-    plt.title('Cosine Similarity Matrix (Debiased Pocket Embeddings)')
+    plt.title('Cosine Similarity Matrix (Debiased Pocket Embeddings, Ordered by Cluster)')
     plt.tight_layout()
-    plt.savefig(output_dir / 'similarity_heatmap_debiased.png', dpi=300)
-    plt.close()
-    
-    # 2. Cluster size distribution
-    cluster_counts = defaultdict(int)
-    for label in labels:
-        cluster_counts[label] += 1
-    
-    plt.figure(figsize=(10, 6))
-    clusters = sorted(cluster_counts.keys())
-    counts = [cluster_counts[c] for c in clusters]
-    plt.bar(clusters, counts)
-    plt.xlabel('Cluster ID')
-    plt.ylabel('Number of Complexes')
-    plt.title('Cluster Size Distribution (Debiased)')
-    plt.grid(axis='y', alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(output_dir / 'cluster_sizes_debiased.png', dpi=300)
+    plt.savefig(output_dir / 'similarity_heatmap_debiased_ordered.png', dpi=300)
     plt.close()
     
     print(f"Visualizations saved to {output_dir}")
-
-def save_cluster_assignments(file_names, labels, output_file):
-    """Save cluster assignments to a text file."""
-    with open(output_file, 'w') as f:
-        f.write("file_name\tcluster_id\n")
-        for file_name, label in zip(file_names, labels):
-            f.write(f"{file_name}\t{label}\n")
-    print(f"Cluster assignments saved to {output_file}")
-
+    
 def main():
     parser = argparse.ArgumentParser(
         description="Cluster pocket ATOMICA embeddings with debiasing (removes global directions)")
@@ -379,7 +344,6 @@ def main():
         elif args.n_clusters > n_files / 10:
             print(f"  WARNING: {args.n_clusters} clusters may be too many (>{n_files//10} recommended)")
     
-    total_start_time = time.time()
     
     # Print configuration
     print(f"\n{'='*60}")
@@ -506,11 +470,6 @@ def main():
     np.save(output_dir / "mu_global.npy", mu_global)
     np.save(output_dir / "pca_components.npy", pca_components)
     
-    total_elapsed = time.time() - total_start_time
-    print(f"\n{'='*60}")
-    print(f"Total processing time: {total_elapsed:.2f} seconds ({total_elapsed/60:.2f} minutes)")
-    print(f"Results saved to {output_dir}")
-    print(f"{'='*60}")
 
 if __name__ == "__main__":
     main()
