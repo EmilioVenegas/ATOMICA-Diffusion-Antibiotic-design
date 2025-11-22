@@ -1,0 +1,11 @@
+Total rows in merged CSV: 58940
+Rows with cluster assignments: 52572
+Rows without cluster assignments: 6368
+
+Total matched complexes: 52572
+Total unique (cluster, scaffold) pairs: 9015
+Unique clusters: 163
+Unique scaffolds: 2658
+
+Missing names from pt files: 0
+Missing rec_ids in CSV: 6368
