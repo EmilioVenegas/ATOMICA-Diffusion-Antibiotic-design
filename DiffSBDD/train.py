@@ -37,7 +37,8 @@ def merge_configs(config, resume_config):
     """
     # List of keys that should NOT be overwritten by the checkpoint
     # This allows adjusting hardware-dependent parameters (like batch_size) when resuming
-    keys_to_keep = {'batch_size', 'num_workers', 'gpus', 'accumulate_grad_batches', 'gradient_clip_val'}
+    keys_to_keep = {'batch_size', 'num_workers', 'gpus', 'accumulate_grad_batches', 'gradient_clip_val',
+                    'auxiliary_loss', 'loss_params', 'bond_params', 'coord_loss_weight', 'eval_params'}
 
     for key, value in resume_config.items():
         if key in keys_to_keep:
@@ -156,7 +157,7 @@ if __name__ == "__main__":
         max_epochs=args.n_epochs,
         logger=logger,
         callbacks=[checkpoint_callback],
-        #precision='16-mixed',
+        precision='16-mixed',
         enable_progress_bar=args.enable_progress_bar,
         num_sanity_val_steps=args.num_sanity_val_steps,
         accelerator='gpu', 
@@ -170,7 +171,7 @@ if __name__ == "__main__":
         # CRITICAL: Detect NaN gradients
         detect_anomaly=False,  # Set to True for debugging
         # CRITICAL: Use gradient clipping callback
-        val_check_interval=0.25,  # Validate 4 times per epoch
+        val_check_interval=1.0,  # Validate 4 times per epoch
     )
 
     trainer.fit(model=pl_module, ckpt_path=ckpt_path)
