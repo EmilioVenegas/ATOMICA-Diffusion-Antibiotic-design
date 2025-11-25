@@ -370,17 +370,13 @@ class LigandPocketDDPM(pl.LightningModule):
             nll = nll + weighted_lj_repulsion
             info['weighted_lj'] = weighted_lj_repulsion.mean(0)
         
-        # --- REMOVED: Bond Attraction Loss ---
-        # The harmonic bond potential was forcing ALL nearby atoms to be at
-        # target_length, creating artificial bonds and disconnected fragments.
-        # Molecular geometry should be learned from training data, not imposed.
-        # 
-        # if hasattr(self.hparams, 'bond_params') and self.hparams.bond_params and self.hparams.bond_params.enabled and self.training:
-        #     weight = self.hparams.bond_params.max_weight
-        #     weighted_bond_potential = weight * self.harmonic_bond_potential(x_lig_hat, ligand['mask'])
-        #     nll = nll + weighted_bond_potential
-        #     info['bond_potential'] = weighted_bond_potential.mean(0)
-        # --- END REMOVED ---
+        # --- RESTORED: Bond Attraction Loss ---
+        # Re-enabling to balance the repulsive loss.
+        if hasattr(self.hparams, 'bond_params') and self.hparams.bond_params and self.hparams.bond_params.enabled and self.training:
+            weight = self.hparams.bond_params.max_weight
+            weighted_bond_potential = weight * self.harmonic_bond_potential(x_lig_hat, ligand['mask'])
+            nll = nll + weighted_bond_potential
+            info['bond_potential'] = weighted_bond_potential.mean(0)
 
         # Fill info dict for logging
         info['error_t_lig'] = self.ddpm.sum_except_batch((eps_t_lig - net_out_lig) ** 2, ligand['mask']).mean()
