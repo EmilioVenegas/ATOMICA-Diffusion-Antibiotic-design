@@ -1,9 +1,6 @@
 import torch
 import torch.nn as nn
-from equivariant_diffusion.egnn_new import EGNN, SE3CrossAttention
-import numpy as np
-
-
+from equivariant_diffusion.egnn_new import EquivariantBlock, CrossEquivariantBlock, SinusoidsEmbeddingNew
 
 class AtomicaDynamics(nn.Module):
     def __init__(self, atom_nf, context_nf, n_dims, hidden_nf, device, act_fn, n_layers, attention,
@@ -17,6 +14,8 @@ class AtomicaDynamics(nn.Module):
         self.condition_time = kwargs.get('condition_time', True)
         self.edge_nf = edge_embedding_dim
         self.n_dims = n_dims
+        self.n_layers = n_layers
+        self.device = device
         
         # A single, stable embedding/encoding layer for each input type.
         self.atom_encoder = nn.Linear(atom_nf, hidden_nf)
@@ -29,21 +28,59 @@ class AtomicaDynamics(nn.Module):
         
         dynamics_node_nf = hidden_nf + 1 if self.condition_time else hidden_nf
         
-        # The "pure" processing blocks that receive ALREADY-EMBEDDED features.
-        self.egnn = EGNN(
-            in_node_nf=dynamics_node_nf, in_edge_nf=self.edge_nf, hidden_nf=hidden_nf, device=device, act_fn=act_fn,
-            n_layers=n_layers, attention=attention, tanh=tanh, norm_constant=norm_constant,
-            inv_sublayers=inv_sublayers, sin_embedding=sin_embedding, normalization_factor=normalization_factor,
-            aggregation_method=aggregation_method, reflection_equiv=reflection_equivariant
-        )
-        
-        self.cross_attention = SE3CrossAttention(
-            in_node_nf_q=dynamics_node_nf, in_node_nf_kv=dynamics_node_nf, in_edge_nf=self.edge_nf,
-            hidden_nf=hidden_nf, device=device, act_fn=act_fn, n_layers=n_layers, attention=attention, tanh=tanh,
-            norm_constant=norm_constant, inv_sublayers=inv_sublayers, sin_embedding=sin_embedding,
-            normalization_factor=normalization_factor, aggregation_method=aggregation_method,
-            reflection_equiv=reflection_equivariant
-        )
+        if sin_embedding:
+            self.sin_embedding = SinusoidsEmbeddingNew()
+            edge_feat_nf = self.sin_embedding.dim + 1
+        else:
+            self.sin_embedding = None
+            edge_feat_nf = 1
+
+        if self.edge_nf is not None:
+             edge_feat_nf += self.edge_nf
+
+        # --- INTERLEAVED ARCHITECTURE ---
+        self.layers = nn.ModuleList()
+        for i in range(n_layers):
+            # 1. Self-Interaction (Ligand-Ligand)
+            self.layers.append(
+                EquivariantBlock(
+                    hidden_nf=dynamics_node_nf,
+                    edge_feat_nf=edge_feat_nf,
+                    device=device,
+                    act_fn=act_fn,
+                    n_layers=inv_sublayers,
+                    attention=attention,
+                    norm_diff=True,
+                    tanh=tanh,
+                    coords_range=10.0, # Default for ligand
+                    norm_constant=norm_constant,
+                    sin_embedding=self.sin_embedding,
+                    normalization_factor=normalization_factor,
+                    aggregation_method=aggregation_method,
+                    reflection_equiv=reflection_equivariant
+                )
+            )
+            
+            # 2. Cross-Interaction (Ligand-Pocket)
+            self.layers.append(
+                CrossEquivariantBlock(
+                    hidden_nf_q=dynamics_node_nf,
+                    hidden_nf_kv=dynamics_node_nf,
+                    edge_feat_nf=edge_feat_nf,
+                    device=device,
+                    act_fn=act_fn,
+                    n_layers=inv_sublayers,
+                    attention=attention,
+                    norm_diff=True,
+                    tanh=tanh,
+                    coords_range=10.0,
+                    norm_constant=norm_constant,
+                    sin_embedding=self.sin_embedding,
+                    normalization_factor=normalization_factor,
+                    aggregation_method=aggregation_method,
+                    reflection_equiv=reflection_equivariant
+                )
+            )
 
     def forward(self, xh_lig, xh_context, t, mask_lig, mask_context):
         x_l, h_l = xh_lig[:, :self.n_dims], xh_lig[:, self.n_dims:]
@@ -60,16 +97,23 @@ class AtomicaDynamics(nn.Module):
         else:
             h_l_t, h_p_t = h_l_emb, h_p_emb
 
-        edges_ll = self.get_ligand_edges(mask_lig, x_l)
-        edge_attr_ll = self.edge_embedding(torch.ones(edges_ll.size(1), device=edges_ll.device, dtype=torch.long)) if self.edge_nf > 0 else None
-        h_intermediate, x_intermediate = self.egnn(h_l_t, x_l, edges_ll, edge_attr=edge_attr_ll, batch_mask=mask_lig)
+        # --- Iterative Updates ---
+        for i in range(0, len(self.layers), 2):
+            self_layer = self.layers[i]
+            cross_layer = self.layers[i+1]
+            
+            # 1. Self-Interaction
+            edges_ll = self.get_ligand_edges(mask_lig, x_l)
+            edge_attr_ll = self.edge_embedding(torch.ones(edges_ll.size(1), device=edges_ll.device, dtype=torch.long)) if self.edge_nf > 0 else None
+            h_l_t, x_l = self_layer(h_l_t, x_l, edges_ll, edge_attr=edge_attr_ll, batch_mask=mask_lig)
+            
+            # 2. Cross-Interaction
+            edges_lp = self.get_cross_edges(mask_lig, mask_context, x_l, x_p)
+            edge_attr_lp = self.edge_embedding(torch.zeros(edges_lp.size(1), device=edges_lp.device, dtype=torch.long)) if self.edge_nf > 0 else None
+            h_l_t, x_l = cross_layer(h_l_t, x_l, h_p_t, x_p, edges_lp, edge_attr=edge_attr_lp, batch_mask=mask_lig)
         
-        edges_lp = self.get_cross_edges(mask_lig, mask_context, x_intermediate, x_p)
-        edge_attr_lp = self.edge_embedding(torch.zeros(edges_lp.size(1), device=edges_lp.device, dtype=torch.long)) if self.edge_nf > 0 else None
-        h_final_emb, x_final = self.cross_attention(h_intermediate, x_intermediate, h_p_t, x_p, edges_lp, edge_attr=edge_attr_lp, batch_mask=mask_lig)
-        
-        final_velocity = x_final - x_l
-        h_features_final = h_final_emb[:, :-1] if self.condition_time else h_final_emb
+        final_velocity = x_l - xh_lig[:, :self.n_dims] # Calculate displacement
+        h_features_final = h_l_t[:, :-1] if self.condition_time else h_l_t
         final_features_update = self.atom_decoder(h_features_final)
 
         ligand_update = torch.cat([final_velocity, final_features_update], dim=-1)
