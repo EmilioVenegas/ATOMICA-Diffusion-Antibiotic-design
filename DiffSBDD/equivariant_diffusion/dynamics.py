@@ -40,7 +40,7 @@ class AtomicaDynamics(nn.Module):
         
         if sin_embedding:
             self.sin_embedding = SinusoidsEmbeddingNew()
-            edge_feat_nf = self.sin_embedding.dim + 1
+            edge_feat_nf = self.sin_embedding.dim
         else:
             self.sin_embedding = None
             edge_feat_nf = 1
