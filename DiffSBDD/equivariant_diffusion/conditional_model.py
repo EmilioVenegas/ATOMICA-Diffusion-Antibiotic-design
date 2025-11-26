@@ -160,6 +160,7 @@ class ConditionalDDPM(EnVariationalDiffusion):
         # 2. Project the coordinate part of the NOISE to be COM-free
         eps_coords = eps_lig[:, :self.n_dims]
         
+        # --- FIX: Enable CoM removal for ligand noise ---
         # Calculate the CoM of the noise
         eps_com = torch_scatter.scatter_mean(eps_coords, lig_mask, dim=0)
         
@@ -168,6 +169,7 @@ class ConditionalDDPM(EnVariationalDiffusion):
         
         # Put the COM-free coordinate noise back
         eps_lig[:, :self.n_dims] = eps_coords_com_free
+        # --- END FIX ---
 
         # 3. Apply the mean and variance using the COM-free noise
         out_lig = mu_lig + sigma[lig_mask] * eps_lig
@@ -192,10 +194,11 @@ class ConditionalDDPM(EnVariationalDiffusion):
         # 2. Project the coordinate part of the NOISE to be COM-free
         
         # Calculate the CoM of the noise
-        eps_com = torch_scatter.scatter_mean(eps_lig_x_uncen, lig_mask, dim=0)
+        # eps_com = torch_scatter.scatter_mean(eps_lig_x_uncen, lig_mask, dim=0)
         
         # Subtract the CoM of the noise from the noise itself
-        eps_lig_x = eps_lig_x_uncen - eps_com[lig_mask]
+        # eps_lig_x = eps_lig_x_uncen - eps_com[lig_mask]
+        eps_lig_x = eps_lig_x_uncen
         
         # 3. Combine the centered x-noise and standard h-noise
         eps_lig = torch.cat([eps_lig_x, eps_lig_h], dim=1)

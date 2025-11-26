@@ -94,20 +94,32 @@ class EquivariantUpdate(nn.Module):
         self.normalization_factor = normalization_factor
         self.aggregation_method = aggregation_method
 
+    def scaled_soft_clip(self, x, limit):
+        """
+        Scaled Soft Clipping (Softsign).
+        Behaves linearly near 0, but smoothly asymptotes to +/- limit.
+        Solves vanishing gradient of tanh while keeping outputs bounded.
+        """
+        return limit * (x / (1 + torch.abs(x)))
+
     def coord_model(self, h, coord, edge_index, coord_diff, coord_cross,
                     edge_attr, edge_mask, update_coords_mask=None, h_col_features=None):
         row, col = edge_index
         h_col = h_col_features if h_col_features is not None else h
         input_tensor = torch.cat([h[row], h_col[col], edge_attr], dim=1)
         if self.tanh:
-            trans = coord_diff * torch.tanh(self.coord_mlp(input_tensor)) * self.coords_range
+            # trans = coord_diff * torch.tanh(self.coord_mlp(input_tensor)) * self.coords_range
+            # FIX: Use Scaled Soft Clipping instead of Tanh
+            trans = coord_diff * self.scaled_soft_clip(self.coord_mlp(input_tensor), self.coords_range)
         else:
             trans = coord_diff * self.coord_mlp(input_tensor)
 
         if not self.reflection_equiv and coord_cross is not None:
             phi_cross = self.cross_product_mlp(input_tensor)
             if self.tanh:
-                phi_cross = torch.tanh(phi_cross) * self.coords_range
+                # phi_cross = torch.tanh(phi_cross) * self.coords_range
+                # FIX: Use Scaled Soft Clipping instead of Tanh
+                phi_cross = self.scaled_soft_clip(phi_cross, self.coords_range)
             trans = trans + coord_cross * phi_cross
 
         if edge_mask is not None:
@@ -460,3 +472,114 @@ class SE3CrossAttention(nn.Module):
         if node_mask_q is not None:
             h_q_final = h_q_final * node_mask_q
         return h_q_final, x_q
+class InteractionBlock(nn.Module):
+    def __init__(self, hidden_nf, edge_feat_nf=2, device='cpu', act_fn=nn.SiLU(), n_layers=2, attention=True,
+                 norm_diff=True, tanh=False, coords_range=15, norm_constant=1, sin_embedding=None,
+                 normalization_factor=100, aggregation_method='sum', reflection_equiv=True):
+        super(InteractionBlock, self).__init__()
+        self.hidden_nf = hidden_nf
+        self.device = device
+        self.n_layers = n_layers
+        self.coords_range_layer = float(coords_range)
+        self.norm_diff = norm_diff
+        self.norm_constant = norm_constant
+        self.sin_embedding = sin_embedding
+        self.normalization_factor = normalization_factor
+        self.aggregation_method = aggregation_method
+        self.reflection_equiv = reflection_equiv
+
+        for i in range(0, n_layers):
+            self.add_module("gcl_ll_%d" % i, GCL(self.hidden_nf, self.hidden_nf, self.hidden_nf, edges_in_d=edge_feat_nf,
+                                              act_fn=act_fn, attention=attention,
+                                              normalization_factor=self.normalization_factor,
+                                              aggregation_method=self.aggregation_method))
+            self.add_module("gcl_lp_%d" % i, CrossGCL(self.hidden_nf, self.hidden_nf, self.hidden_nf, self.hidden_nf,
+                                                  edges_in_d=edge_feat_nf, act_fn=act_fn, attention=attention,
+                                                  normalization_factor=self.normalization_factor,
+                                                  aggregation_method=self.aggregation_method))
+
+        self.add_module("equiv_ll", EquivariantUpdate(hidden_nf, edges_in_d=edge_feat_nf, act_fn=nn.SiLU(), tanh=tanh,
+                                                       coords_range=self.coords_range_layer,
+                                                       normalization_factor=self.normalization_factor,
+                                                       aggregation_method=self.aggregation_method,
+                                                       reflection_equiv=self.reflection_equiv))
+        
+        self.add_module("equiv_lp", EquivariantUpdate(hidden_nf, edges_in_d=edge_feat_nf, act_fn=nn.SiLU(), tanh=tanh,
+                                                       coords_range=self.coords_range_layer,
+                                                       normalization_factor=self.normalization_factor,
+                                                       aggregation_method=self.aggregation_method,
+                                                       reflection_equiv=self.reflection_equiv))
+        self.to(self.device)
+
+    def forward(self, h_l, x_l, h_p, x_p, edge_index_ll, edge_index_lp, node_mask_l=None, edge_mask_ll=None, edge_mask_lp=None,
+                edge_attr_ll=None, edge_attr_lp=None, batch_mask_l=None):
+        
+        # --- Ligand-Ligand Precomputation ---
+        distances_ll, coord_diff_ll = coord2diff(x_l, edge_index_ll, self.norm_constant)
+        if self.reflection_equiv:
+            coord_cross_ll = None
+        else:
+            coord_cross_ll = coord2cross(x_l, edge_index_ll, batch_mask_l, self.norm_constant)
+            
+        if self.sin_embedding is not None:
+            distances_ll = self.sin_embedding(distances_ll)
+            
+        if edge_attr_ll is not None:
+            edge_attr_ll = torch.cat([distances_ll, edge_attr_ll], dim=1)
+        else:
+            edge_attr_ll = distances_ll
+
+        # --- Ligand-Pocket Precomputation ---
+        row, col = edge_index_lp
+        coord_diff_lp = x_l[row] - x_p[col]
+        distances_lp = torch.sum(coord_diff_lp**2, 1).unsqueeze(1)
+        norm_lp = torch.sqrt(distances_lp + 1e-8)
+        coord_diff_lp = coord_diff_lp / (norm_lp + self.norm_constant)
+        
+        if self.sin_embedding is not None:
+            distances_lp = self.sin_embedding(norm_lp)
+        else:
+            distances_lp = norm_lp
+            
+        if edge_attr_lp is not None:
+            edge_attr_lp = torch.cat([distances_lp, edge_attr_lp], dim=1)
+        else:
+            edge_attr_lp = distances_lp
+            
+        coord_cross_lp = None 
+
+        # --- Feature Updates ---
+        for i in range(0, self.n_layers):
+            h_l_ll, _ = self._modules["gcl_ll_%d" % i](h_l, edge_index_ll, edge_attr=edge_attr_ll,
+                                            node_mask=node_mask_l, edge_mask=edge_mask_ll)
+            
+            h_l_lp, _ = self._modules["gcl_lp_%d" % i](h_l, h_p, edge_index_lp, edge_attr=edge_attr_lp,
+                                               node_mask=node_mask_l, edge_mask=edge_mask_lp)
+            
+            delta_ll = h_l_ll - h_l
+            delta_lp = h_l_lp - h_l
+            h_l = h_l + delta_ll + delta_lp
+
+        # --- Coordinate Updates ---
+        x_l_new_ll = self._modules["equiv_ll"].coord_model(
+            h_l, x_l, edge_index_ll, coord_diff_ll, coord_cross_ll,
+            edge_attr=edge_attr_ll, edge_mask=edge_mask_ll,
+            update_coords_mask=node_mask_l
+        )
+        delta_x_ll = x_l_new_ll - x_l
+        
+        x_l_new_lp = self._modules["equiv_lp"].coord_model(
+            h_l, x_l, edge_index_lp, coord_diff_lp, coord_cross_lp,
+            edge_attr=edge_attr_lp, edge_mask=edge_mask_lp,
+            update_coords_mask=node_mask_l,
+            h_col_features=h_p
+        )
+        delta_x_lp = x_l_new_lp - x_l
+        
+        x_l = x_l + delta_x_ll + delta_x_lp
+
+        if node_mask_l is not None:
+            h_l = h_l * node_mask_l
+            x_l = x_l * node_mask_l
+            
+        return h_l, x_l
