@@ -281,6 +281,15 @@ class EnVariationalDiffusion(nn.Module):
         xh_lig, xh_pocket = self.sample_normal(mu_x_lig, mu_x_pocket, sigma_x,
                                             lig_mask, pocket_mask, fix_noise)
 
+        # --- NEW: Enforce zero-CoM ---
+        xh_x = self.remove_mean_batch(
+            torch.cat((xh_lig[:, :self.n_dims], xh_pocket[:, :self.n_dims]), dim=0),
+            torch.cat((lig_mask, pocket_mask))
+        )
+        xh_lig = torch.cat((xh_x[:len(lig_mask)], xh_lig[:, self.n_dims:]), dim=1)
+        xh_pocket = torch.cat((xh_x[len(lig_mask):], xh_pocket[:, self.n_dims:]), dim=1)
+        # --- END NEW ---
+
         x_lig, h_lig = self.unnormalize(
             xh_lig[:, :self.n_dims], z0_lig[:, self.n_dims:])
 
