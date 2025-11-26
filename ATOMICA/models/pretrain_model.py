@@ -228,7 +228,7 @@ class DenoisePretrainModel(nn.Module):
         assert config['model_type'] == cls.__name__, f"Model type {config['model_type']} does not match {cls.__name__}"
         del config['model_type']
         model = DenoisePretrainModel(**config)
-        model.load_state_dict(torch.load(weights_path))
+        model.load_state_dict(torch.load(weights_path, map_location='cpu'))
         return model
 
 
