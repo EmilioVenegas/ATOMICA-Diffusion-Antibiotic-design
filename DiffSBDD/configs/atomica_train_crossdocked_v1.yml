@@ -1,0 +1,90 @@
+run_name: 'norm_softsign_unified-v2'
+logdir: './my_logs'
+wandb_params:
+  mode: 'online'
+  entity: 'emiliovenegas10-tecnol-gico-de-monterrey'
+  group: 'atomica-crossdocked'
+  project: 'atomica-enhanced'
+
+dataset: 'atomica_PL'
+datadir: data/processed_crossdocked_atomica/
+atomica_model_config: ATOMICA/pretrain/pretrain_model_config.json
+atomica_model_weights: ATOMICA/pretrain/pretrain_model_weights.pt
+enable_progress_bar: True
+num_sanity_val_steps: 0
+
+# --- MODEL AND TRAINING PARAMS ---
+mode: 'pocket_conditioning'
+pocket_representation: 'atomica'
+batch_size: 8  # Reduced from 16 to avoid OOM
+lr: 1.0e-4 
+n_epochs: 1000
+num_workers: 8
+gpus: 1
+strategy: 'auto'
+clip_grad: True
+augment_rotation: False
+warmup_steps: 500
+
+augment_noise: 0.001
+accumulate_grad_batches: 16 # Increased to maintain effective batch size
+gradient_clip_algorithm: 'norm'
+gradient_clip_val: 0.1
+
+# Coordinate loss weight - prioritize geometry
+coord_loss_weight: 1.0
+
+# Auxiliary loss (Repulsion) - Fixes valence errors
+auxiliary_loss: False
+loss_params:
+  max_weight: 0.1   # Increased from 0.001
+  schedule: 'linear'
+  clamp_lj: 20.0
+
+# Bond connectivity guidance
+bond_params:
+  enabled: False
+  max_weight: 0.01    # Reduced from 2.0
+  target_length: 1.5
+  cutoff_radius: 2.0  # Reduced from 3.5
+  clamp_b: 5.0
+
+# --- EGNN (DYNAMICS) PARAMS ---
+egnn_params:
+  device: 'cuda'
+  edge_cutoff_ligand: null
+  edge_cutoff_interaction: 7.0  # May need adjustment for larger pockets
+  reflection_equivariant: True
+  atomica_embed_dim: 32
+  atomica_one_hot_dim: 9
+  hidden_nf: 256
+  n_layers: 3
+  attention: True
+  tanh: True
+  coords_range: 4.0 # Reduced from 10.0
+  norm_constant: 1.0
+  inv_sublayers: 1
+  sin_embedding: True
+  aggregation_method: 'mean' 
+  normalization_factor: 1 
+  edge_embedding_dim: 32
+  condition_time: True
+
+# --- DIFFUSION PARAMS ---
+diffusion_params:
+  diffusion_steps: 500
+  diffusion_noise_schedule: 'cosine'
+  diffusion_noise_precision: 1.0e-4
+  diffusion_loss_type: 'l2'
+  normalize_factors: [6.6505, 1.0]
+
+# --- EVALUATION PARAMS ---
+eval_epochs: 50
+visualize_sample_epoch: 50
+visualize_chain_epoch: 50
+eval_params:
+  n_eval_samples: 24
+  eval_batch_size: 16
+  smiles_file: data/crossdocked_smiles.npy
+  n_visualize_samples: 4
+  keep_frames: 100
