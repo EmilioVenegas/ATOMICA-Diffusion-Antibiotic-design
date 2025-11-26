@@ -1,36 +1,4 @@
-"""Sample random ligands, score them with Boltz-2, and summarise affinity scores.
-
-This script is intended for command line use. Provide a chemical space file (e.g.
-CSV with a `smiles` column), optionally a YAML template describing the receptor
-setup, and it will:
-
-1. Randomly sample ligands from the chemical space.
-2. Materialise Boltz YAML files for each sample (updating the ligand entry).
-3. Invoke the Boltz-2 predictor in CPU mode to obtain affinity estimates.
-4. Collate the affinity distribution and write summary statistics / histogram.
-
-Example
--------
-
-```bash
-poetry run python scripts/eval/random.py \
-    --chemical-space data/chemical_space.csv \
-    --column smiles \
-    --sample-size 50 \
-    --template scripts/eval/templates/base_target.yaml \
-    --binder-id LIG \
-    --output-dir outputs/random_boltz_eval
-```
-
-Notes
------
-- Boltz requires substantial compute even on CPU; expect the prediction stage to
-  take several minutes depending on `sample_size` and the selected sampling
-  parameters.
-- The template YAML should contain all non-ligand entries (e.g. protein chains,
-  constraints). The ligand entry with id `binder-id` will be replaced per
-  sampled molecule. If no template is provided, only a ligand entry is emitted.
-"""
+"""Sample random ligands, score them with Boltz-2, and summarise affinity scores."""
 
 from __future__ import annotations
 

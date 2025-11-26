@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Run Boltz-2 scoring and generate histograms on MIT cluster.
-
-This script is designed to be submitted via srun on the MIT Engaging Cloud cluster.
-It runs the Boltz-2 affinity scoring workflow and generates histogram visualizations.
-"""
+"""Run Boltz-2 scoring and generate histograms on MIT cluster."""
 
 from __future__ import annotations
 
