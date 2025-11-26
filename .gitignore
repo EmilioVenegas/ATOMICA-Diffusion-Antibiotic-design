@@ -27,3 +27,17 @@ DiffSBDD/analyze_training.py
 DiffSBDD/diagnose_connectivity.py
 DiffSBDD/test_bond_detection.py
 DiffSBDD/configs/atomica_train_dryrun.yml
+verification_results/
+DiffSBDD/process_crossdock_split.py
+fetch_antibiotic_pdbs.py
+fetch_bacterial_pdbs.py
+fetch_expanded_antibiotic_pdbs.py
+identify_pdb_complexes.py
+inspect_lmdb.py
+inspect_split.py
+DiffSBDD/tests/test_interaction_block.py
+DiffSBDD/tests/test_dynamics.py
+verify_sampling.py
+process_new_antibiotic_data.py
+pdb_complex_analysis.json
+pdb_analysis.log
