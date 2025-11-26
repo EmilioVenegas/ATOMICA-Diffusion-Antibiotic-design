@@ -1,382 +1,139 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from equivariant_diffusion.egnn_new import EGNN, GNN, SE3CrossAttention
-from equivariant_diffusion.en_diffusion import EnVariationalDiffusion
-remove_mean_batch = EnVariationalDiffusion.remove_mean_batch
-import numpy as np
-
-
-class EGNNDynamics(nn.Module):
-    def __init__(self, atom_nf, residue_nf,
-                 n_dims, joint_nf=16, hidden_nf=64, device='cpu',
-                 act_fn=torch.nn.SiLU(), n_layers=4, attention=False,
-                 condition_time=True, tanh=False, mode='egnn_dynamics',
-                 norm_constant=0, inv_sublayers=2, sin_embedding=False,
-                 normalization_factor=100, aggregation_method='sum',
-                 update_pocket_coords=True, edge_cutoff_ligand=None,
-                 edge_cutoff_pocket=None, edge_cutoff_interaction=None,
-                 reflection_equivariant=True, edge_embedding_dim=None):
-        super().__init__()
-        self.mode = mode
-        self.edge_cutoff_l = edge_cutoff_ligand
-        self.edge_cutoff_p = edge_cutoff_pocket
-        self.edge_cutoff_i = edge_cutoff_interaction
-        self.edge_nf = edge_embedding_dim
-
-        self.atom_encoder = nn.Sequential(
-            nn.Linear(atom_nf, 2 * atom_nf),
-            act_fn,
-            nn.Linear(2 * atom_nf, joint_nf)
-        )
-
-        self.atom_decoder = nn.Sequential(
-            nn.Linear(joint_nf, 2 * atom_nf),
-            act_fn,
-            nn.Linear(2 * atom_nf, atom_nf)
-        )
-
-        self.residue_encoder = nn.Sequential(
-            nn.Linear(residue_nf, 2 * residue_nf),
-            act_fn,
-            nn.Linear(2 * residue_nf, joint_nf)
-        )
-
-        self.residue_decoder = nn.Sequential(
-            nn.Linear(joint_nf, 2 * residue_nf),
-            act_fn,
-            nn.Linear(2 * residue_nf, residue_nf)
-        )
-
-        self.edge_embedding = nn.Embedding(3, self.edge_nf) \
-            if self.edge_nf is not None else None
-        self.edge_nf = 0 if self.edge_nf is None else self.edge_nf
-
-        if condition_time:
-            dynamics_node_nf = joint_nf + 1
-        else:
-            print('Warning: dynamics model is _not_ conditioned on time.')
-            dynamics_node_nf = joint_nf
-
-        if mode == 'egnn_dynamics':
-            self.egnn = EGNN(
-                in_node_nf=dynamics_node_nf, in_edge_nf=self.edge_nf,
-                hidden_nf=hidden_nf, device=device, act_fn=act_fn,
-                n_layers=n_layers, attention=attention, tanh=tanh,
-                norm_constant=norm_constant,
-                inv_sublayers=inv_sublayers, sin_embedding=sin_embedding,
-                normalization_factor=normalization_factor,
-                aggregation_method=aggregation_method,
-                reflection_equiv=reflection_equivariant
-            )
-            self.node_nf = dynamics_node_nf
-            self.update_pocket_coords = update_pocket_coords
-
-        elif mode == 'gnn_dynamics':
-            self.gnn = GNN(
-                in_node_nf=dynamics_node_nf + n_dims, in_edge_nf=self.edge_nf,
-                hidden_nf=hidden_nf, out_node_nf=n_dims + dynamics_node_nf,
-                device=device, act_fn=act_fn, n_layers=n_layers,
-                attention=attention, normalization_factor=normalization_factor,
-                aggregation_method=aggregation_method)
-
-        self.device = device
-        self.n_dims = n_dims
-        self.condition_time = condition_time
-
-    def forward(self, xh_lig, xh_context, t, mask_lig, mask_context):
-        # --- 1. Prepare Inputs with Jitter ---
-        # Jitter is especially important during sampling to avoid coincident atoms
-        jitter_val = 1e-4
-        x_l = xh_lig[:, :self.n_dims].clone() + (jitter_val * torch.randn_like(xh_lig[:, :self.n_dims]))
-        h_l = xh_lig[:, self.n_dims:].clone()
-        x_p = xh_context[:, :self.n_dims].clone()
-        h_p_atomica = xh_context[:, self.n_dims:].clone()
-
-        # --- Initial NaN Check ---
-        if not torch.isfinite(x_l).all() or not torch.isfinite(h_l).all():
-            print("ERROR: NaN in AtomicaDynamics input. Returning zeros.")
-            return torch.zeros_like(xh_lig), torch.zeros_like(xh_context)
-
-        h_l_emb = F.layer_norm(self.atom_encoder(h_l), h_l.shape[1:])
-        h_p_emb = F.layer_norm(self.context_encoder(h_p_atomica), h_p_atomica.shape[1:])
-
-        if self.condition_time:
-            h_time = t[mask_lig] if np.prod(t.size()) > 1 else torch.empty_like(h_l_emb[:, 0:1]).fill_(t.item())
-            h_l_t = torch.cat([h_l_emb, h_time], dim=1)
-        else:
-            h_l_t = h_l_emb
-
-        # --- 2. L-L Path ---
-        edges_ll = self.get_ligand_edges(mask_lig, x_l)
-        if edges_ll.shape[1] > 0:
-            edge_attr_ll = self.edge_embedding(torch.ones(edges_ll.size(1), dtype=int, device=self.device)) if self.edge_nf > 0 else None
-            h_ll_final, x_ll_final = self.egnn(h_l_t, x_l, edges_ll, batch_mask=mask_lig, edge_attr=edge_attr_ll)
-            vel_ll = torch.nan_to_num(x_ll_final - x_l) # Sanitize output
-        else:
-            vel_ll, h_ll_final = torch.zeros_like(x_l), h_l_t.clone()
-        
-        # --- 3. L-P Path ---
-        edges_lp = self.get_cross_edges(mask_lig, mask_context, x_l, x_p)
-        if edges_lp.shape[1] > 0:
-            edge_attr_lp = self.edge_embedding(torch.zeros(edges_lp.size(1), dtype=int, device=self.device)) if self.edge_nf > 0 else None
-            h_lp_final, x_lp_final = self.cross_attention(h_l_t, x_l, h_p_emb, x_p, edges_lp, batch_mask=mask_lig, edge_attr=edge_attr_lp)
-            vel_lp = torch.nan_to_num(x_lp_final - x_l) # Sanitize output
-        else:
-            vel_lp, h_lp_final = torch.zeros_like(x_l), h_l_t.clone()
-
-        # --- 4. Combine Updates ---
-        final_velocity = (vel_ll + vel_lp) / 2.0
-        
-        h_ll_feat = h_ll_final[:, :-1] if self.condition_time else h_ll_final
-        h_lp_feat = h_lp_final[:, :-1] if self.condition_time else h_lp_final
-        h_final_emb = (h_ll_feat + h_lp_feat) / 2.0
-        
-        final_features = self.atom_decoder(h_final_emb)
-
-        # Final safety check
-        final_velocity = torch.nan_to_num(final_velocity, nan=0.0, posinf=1.0, neginf=-1.0)
-        final_features = torch.nan_to_num(final_features, nan=0.0, posinf=1.0, neginf=-1.0)
-
-        return torch.cat([final_velocity, final_features], dim=-1), torch.zeros_like(xh_context)
-
-    def get_edges(self, batch_mask_ligand, batch_mask_pocket, x_ligand, x_pocket):
-        adj_ligand = batch_mask_ligand[:, None] == batch_mask_ligand[None, :]
-        adj_pocket = batch_mask_pocket[:, None] == batch_mask_pocket[None, :]
-        adj_cross = batch_mask_ligand[:, None] == batch_mask_pocket[None, :]
-
-        if self.edge_cutoff_l is not None:
-            adj_ligand = adj_ligand & (torch.cdist(x_ligand, x_ligand) <= self.edge_cutoff_l)
-
-        if self.edge_cutoff_p is not None:
-            adj_pocket = adj_pocket & (torch.cdist(x_pocket, x_pocket) <= self.edge_cutoff_p)
-
-        if self.edge_cutoff_i is not None:
-            adj_cross = adj_cross & (torch.cdist(x_ligand, x_pocket) <= self.edge_cutoff_i)
-
-        adj = torch.cat((torch.cat((adj_ligand, adj_cross), dim=1),
-                         torch.cat((adj_cross.T, adj_pocket), dim=1)), dim=0)
-        edges = torch.stack(torch.where(adj), dim=0)
-
-        return edges
-
+from equivariant_diffusion.egnn_new import EquivariantBlock, CrossEquivariantBlock, SinusoidsEmbeddingNew, InteractionBlock
 
 class AtomicaDynamics(nn.Module):
-    def __init__(self, atom_nf, context_nf,
-                 n_dims, joint_nf=16, hidden_nf=64, device='cpu',
-                 act_fn=torch.nn.SiLU(), n_layers=4, attention=False,
-                 condition_time=True, tanh=False,
-                 norm_constant=0, inv_sublayers=2, sin_embedding=False,
-                 normalization_factor=100, aggregation_method='sum',
-                 edge_cutoff_ligand=None, edge_cutoff_interaction=None,
-                 reflection_equivariant=True, edge_embedding_dim=None):
+    def __init__(self, atom_nf, context_nf, n_dims, hidden_nf, device, act_fn, n_layers, attention,
+                 tanh, norm_constant, inv_sublayers, sin_embedding, normalization_factor,
+                 aggregation_method, edge_cutoff_ligand, edge_cutoff_interaction,
+                 reflection_equivariant, edge_embedding_dim, **kwargs):
         super().__init__()
         self.update_pocket_coords = False
         self.edge_cutoff_l = edge_cutoff_ligand
         self.edge_cutoff_i = edge_cutoff_interaction
+        self.condition_time = kwargs.get('condition_time', True)
         self.edge_nf = edge_embedding_dim
-        
-        # STABILITY FIX 1: Increase norm_constant for coordinate normalization
-        self.coord_norm_constant = max(norm_constant, 1.0)  # At least 1.0
-
-        # Ligand (atom) feature encoder
-        self.atom_encoder = nn.Sequential(
-            nn.Linear(atom_nf, 2 * atom_nf),
-            act_fn,
-            nn.Linear(2 * atom_nf, hidden_nf)
-        )
-        # STABILITY: Initialize with smaller weights
-        for layer in self.atom_encoder:
-            if isinstance(layer, nn.Linear):
-                nn.init.xavier_uniform_(layer.weight, gain=0.01)
-                if layer.bias is not None:
-                    nn.init.zeros_(layer.bias)
-
-        # Ligand (atom) feature decoder
-        self.atom_decoder = nn.Sequential(
-            nn.Linear(hidden_nf, 2 * atom_nf),
-            act_fn,
-            nn.Linear(2 * atom_nf, atom_nf)
-        )
-        # STABILITY: Initialize with smaller weights
-        for layer in self.atom_decoder:
-            if isinstance(layer, nn.Linear):
-                nn.init.xavier_uniform_(layer.weight, gain=0.01)
-                if layer.bias is not None:
-                    nn.init.zeros_(layer.bias)
-
-        # Pocket (context) embedding encoder
-        self.context_encoder = nn.Sequential(
-            nn.Linear(context_nf, 2 * context_nf),
-            act_fn,
-            nn.Linear(2 * context_nf, hidden_nf)
-        )
-        # STABILITY: Initialize with smaller weights
-        for layer in self.context_encoder:
-            if isinstance(layer, nn.Linear):
-                nn.init.xavier_uniform_(layer.weight, gain=0.01)
-                if layer.bias is not None:
-                    nn.init.zeros_(layer.bias)
-
-        self.edge_embedding = nn.Embedding(2, self.edge_nf) \
-            if self.edge_nf is not None else None
-        self.edge_nf = 0 if self.edge_nf is None else self.edge_nf
-
-        if condition_time:
-            dynamics_node_nf = hidden_nf + 1
-        else:
-            print('Warning: dynamics model is _not_ conditioned on time.')
-            dynamics_node_nf = hidden_nf
-            
-        self.node_nf = dynamics_node_nf
         self.n_dims = n_dims
+        self.n_layers = n_layers
         self.device = device
-        self.condition_time = condition_time
+        self.coords_range = kwargs.get('coords_range', 10.0)
+        
+        # A single, stable embedding/encoding layer for each input type.
+        self.atom_encoder = nn.Linear(atom_nf, hidden_nf)
+        self.context_encoder = nn.Linear(context_nf, hidden_nf)
+        
+        # A single, stable decoding layer.
+        self.atom_decoder = nn.Linear(hidden_nf, atom_nf)
+        
+        self.edge_embedding = nn.Embedding(2, self.edge_nf) if self.edge_nf is not None else None
+        
+        # --- FIX: Stronger Time Embedding ---
+        if self.condition_time:
+            self.time_embedding = SinusoidsEmbeddingNew()
+            self.time_emb_dim = self.time_embedding.dim
+        else:
+            self.time_embedding = None
+            self.time_emb_dim = 0
+            
+        dynamics_node_nf = hidden_nf + self.time_emb_dim if self.condition_time else hidden_nf
+        # --- END FIX ---
+        
+        if sin_embedding:
+            self.sin_embedding = SinusoidsEmbeddingNew()
+            edge_feat_nf = self.sin_embedding.dim + 1
+        else:
+            self.sin_embedding = None
+            edge_feat_nf = 1
 
-        # --- Core Components ---
-        
-        # 1. Ligand-Ligand (L-L) Module
-        self.egnn = EGNN(
-            in_node_nf=dynamics_node_nf, in_edge_nf=self.edge_nf,
-            hidden_nf=hidden_nf, device=device, act_fn=act_fn,
-            n_layers=n_layers, attention=attention, tanh=True,
-            norm_constant=self.coord_norm_constant,  # STABILITY FIX
-            inv_sublayers=inv_sublayers, sin_embedding=sin_embedding,
-            normalization_factor=normalization_factor,
-            aggregation_method=aggregation_method,
-            reflection_equiv=reflection_equivariant
-        )
-        
-        # 2. Ligand-Pocket (L-P) Module
-        self.cross_attention = SE3CrossAttention(
-            in_node_nf_q=dynamics_node_nf, in_node_nf_kv=hidden_nf,
-            in_edge_nf=self.edge_nf,
-            hidden_nf=hidden_nf, device=device, act_fn=act_fn,
-            n_layers=n_layers, attention=attention, tanh=True,
-            norm_constant=self.coord_norm_constant,  # STABILITY FIX
-            inv_sublayers=inv_sublayers, sin_embedding=sin_embedding,
-            normalization_factor=normalization_factor,
-            aggregation_method=aggregation_method,
-            reflection_equiv=reflection_equivariant
-        )
+        if self.edge_nf is not None:
+             edge_feat_nf += self.edge_nf
+
+        # --- INTERACTION BLOCK ARCHITECTURE ---
+        self.layers = nn.ModuleList()
+        for i in range(n_layers):
+            self.layers.append(
+                InteractionBlock(
+                    hidden_nf=dynamics_node_nf,
+                    edge_feat_nf=edge_feat_nf,
+                    device=device,
+                    act_fn=act_fn,
+                    n_layers=inv_sublayers,
+                    attention=attention,
+                    norm_diff=True,
+                    tanh=tanh,
+                    coords_range=self.coords_range,
+                    norm_constant=norm_constant,
+                    sin_embedding=self.sin_embedding,
+                    normalization_factor=normalization_factor,
+                    aggregation_method=aggregation_method,
+                    reflection_equiv=reflection_equivariant
+                )
+            )
 
     def forward(self, xh_lig, xh_context, t, mask_lig, mask_context):
+        x_l, h_l = xh_lig[:, :self.n_dims], xh_lig[:, self.n_dims:]
+        x_p, h_p = xh_context[:, :self.n_dims], xh_context[:, self.n_dims:]
 
-        # --- 1. Prepare Inputs with BETTER JITTER ---
-        # STABILITY FIX: Use jitter to prevent overlapping coordinates
-        jitter_val = 1e-4
-        jitter = jitter_val * torch.randn_like(xh_lig[:, :self.n_dims])
-        x_l = xh_lig[:, :self.n_dims].clone() + jitter
-        h_l = xh_lig[:, self.n_dims:].clone()
-        x_p = xh_context[:, :self.n_dims].clone()
-        h_p_atomica = xh_context[:, self.n_dims:].clone()
-
-        # STABILITY CHECK: Verify no NaN in inputs
-        if torch.isnan(x_l).any() or torch.isnan(h_l).any():
-            print("ERROR: NaN in input to AtomicaDynamics")
-            # Replace NaN with zeros as a fallback
-            x_l = torch.nan_to_num(x_l, nan=0.0)
-            h_l = torch.nan_to_num(h_l, nan=0.0)
-
-        # Embed features with layer norm for stability
         h_l_emb = self.atom_encoder(h_l)
-        h_l_emb = F.layer_norm(h_l_emb, h_l_emb.shape[1:])
-        
-        h_p_emb = self.context_encoder(h_p_atomica)
-        h_p_emb = F.layer_norm(h_p_emb, h_p_emb.shape[1:])
+        h_p_emb = self.context_encoder(h_p)
 
-        # Condition ligand features on time
         if self.condition_time:
-            if np.prod(t.size()) == 1:
-                h_time = torch.empty_like(h_l_emb[:, 0:1]).fill_(t.item())
+            # --- FIX: Apply Sinusoidal Embedding ---
+            if t.numel() > 1:
+                t_emb = self.time_embedding(t)
+                time_emb = t_emb[mask_lig]
+                time_emb_p = t_emb[mask_context]
             else:
-                h_time = t[mask_lig]
-            h_l_t = torch.cat([h_l_emb, h_time], dim=1)
+                t_emb = self.time_embedding(t).view(1, -1)
+                time_emb = t_emb.expand(h_l_emb.size(0), -1)
+                time_emb_p = t_emb.expand(h_p_emb.size(0), -1)
+            
+            h_l_t = torch.cat([h_l_emb, time_emb], dim=1)
+            h_p_t = torch.cat([h_p_emb, time_emb_p], dim=1)
+            # --- END FIX ---
         else:
-            h_l_t = h_l_emb
+            h_l_t, h_p_t = h_l_emb, h_p_emb
 
-        # --- 2. L-L Path (Internal Physics) ---
-        edges_ll = self.get_ligand_edges(mask_lig, x_l)
+        # --- Iterative Updates ---
+        for i, layer in enumerate(self.layers):
+            # 1. Edges
+            edges_ll = self.get_ligand_edges(mask_lig, x_l)
+            edge_attr_ll = self.edge_embedding(torch.ones(edges_ll.size(1), device=edges_ll.device, dtype=torch.long)) if self.edge_nf > 0 else None
+            
+            edges_lp = self.get_cross_edges(mask_lig, mask_context, x_l, x_p)
+            edge_attr_lp = self.edge_embedding(torch.zeros(edges_lp.size(1), device=edges_lp.device, dtype=torch.long)) if self.edge_nf > 0 else None
+            
+            h_l_t, x_l = layer(h_l_t, x_l, h_p_t, x_p, edges_ll, edges_lp, 
+                               node_mask_l=None, edge_mask_ll=None, edge_mask_lp=None,
+                               edge_attr_ll=edge_attr_ll, edge_attr_lp=edge_attr_lp, batch_mask_l=mask_lig)
         
-        # STABILITY FIX: Handle case with no edges
-        if edges_ll.shape[1] == 0:
-            vel_ll = torch.zeros_like(x_l)
-            h_update_ll_features = h_l_emb # No update
-        else:
-            edge_attr_ll = None
-            if self.edge_nf > 0:
-                edge_types_ll = torch.ones(edges_ll.size(1), dtype=int, device=edges_ll.device)
-                edge_attr_ll = self.edge_embedding(edge_types_ll)
-
-            h_ll_final, x_ll_final = self.egnn(
-                h_l_t, x_l, edges_ll,
-                node_mask=mask_lig.unsqueeze(-1), 
-                batch_mask=mask_lig,
-                edge_attr=edge_attr_ll
-            )
-            vel_ll = (x_ll_final - x_l)
-            h_update_ll_features = h_ll_final[:, :-1] if self.condition_time else h_ll_final
-
-        # --- 3. L-P Path (Cross-Attention Interaction) ---
-        edges_lp = self.get_cross_edges(mask_lig, mask_context, x_l, x_p)
-
-        # STABILITY FIX: Handle case with no edges
-        if edges_lp.shape[1] == 0:
-            vel_lp = torch.zeros_like(x_l)
-            h_update_lp_features = h_l_emb # No update
-        else:
-            edge_attr_lp = None
-            if self.edge_nf > 0:
-                edge_types_lp = torch.zeros(edges_lp.size(1), dtype=int, device=edges_lp.device)
-                edge_attr_lp = self.edge_embedding(edge_types_lp)
-
-            h_lp_final, x_lp_final = self.cross_attention(
-                h_q=h_l_t, x_q=x_l, 
-                h_kv=h_p_emb, x_kv=x_p, 
-                edge_index=edges_lp, 
-                node_mask_q=mask_lig.unsqueeze(-1),
-                batch_mask=mask_lig,
-                edge_attr=edge_attr_lp
-            )
-            vel_lp = (x_lp_final - x_l)
-            h_update_lp_features = h_lp_final[:, :-1] if self.condition_time else h_lp_final
-
-        # --- 4. Combine Updates ---
-        # STABILITY FIX: Average updates instead of adding
-        final_velocity = (vel_ll + vel_lp) / 2.0
-        h_final_emb = (h_update_ll_features + h_update_lp_features) / 2.0
+        final_velocity = x_l - xh_lig[:, :self.n_dims] # Calculate displacement
         
-        # Decode features back to original atom_nf
-        final_features = self.atom_decoder(h_final_emb)
+        # --- FIX: Correctly strip multi-dimensional time embedding ---
+        if self.condition_time:
+            h_features_final = h_l_t[:, :-self.time_emb_dim]
+        else:
+            h_features_final = h_l_t
+        # --- END FIX ---
+            
+        final_features_update = self.atom_decoder(h_features_final)
 
-        # STABILITY FIX: Final safety check for NaNs
-        if torch.isnan(final_velocity).any() or torch.isnan(final_features).any():
-            print("Warning: NaN detected in AtomicaDynamics output. Replacing with zeros.")
-            final_velocity = torch.nan_to_num(final_velocity, nan=0.0)
-            final_features = torch.nan_to_num(final_features, nan=0.0)
-
-        # Context (pocket) is fixed, so its "update" is all zeros.
-        ligand_update = torch.cat([final_velocity, final_features], dim=-1)
+        ligand_update = torch.cat([final_velocity, final_features_update], dim=-1)
         pocket_update = torch.zeros_like(xh_context)
 
         return ligand_update, pocket_update
-    def get_ligand_edges(self, batch_mask_ligand, x_ligand):
-        adj_ligand = batch_mask_ligand[:, None] == batch_mask_ligand[None, :]
-        if self.edge_cutoff_l is not None:
-            dists = torch.cdist(x_ligand, x_ligand)
-            adj_ligand = adj_ligand & (dists <= self.edge_cutoff_l)
-        # STABILITY FIX: Add this line to remove self-loops
-        torch.diagonal(adj_ligand).fill_(False)
-        edges = torch.stack(torch.where(adj_ligand), dim=0)
-        return edges
 
-    def get_cross_edges(self, batch_mask_ligand, batch_mask_pocket, x_ligand, x_pocket):
-        if len(x_pocket) == 0:
-            return torch.zeros((2, 0), dtype=torch.long, device=x_ligand.device)
-        adj_cross = batch_mask_ligand[:, None] == batch_mask_pocket[None, :]
+    def get_ligand_edges(self, mask, x):
+        adj = mask[:, None] == mask[None, :]
+        if self.edge_cutoff_l is not None:
+            adj = adj & (torch.cdist(x, x) <= self.edge_cutoff_l)
+        torch.diagonal(adj).fill_(False)
+        return torch.stack(torch.where(adj))
+
+    def get_cross_edges(self, mask_l, mask_p, x_l, x_p):
+        if len(x_p) == 0:
+            return torch.zeros((2, 0), dtype=torch.long, device=x_l.device)
+        adj = mask_l[:, None] == mask_p[None, :]
         if self.edge_cutoff_i is not None:
-            # STABILITY FIX: Add epsilon to cdist to prevent NaN gradients from sqrt(0)
-            dists = torch.cdist(x_ligand, x_pocket)
-            adj_cross = adj_cross & (dists <= self.edge_cutoff_i)
-        edges = torch.stack(torch.where(adj_cross), dim=0)
-        return edges
+            adj = adj & (torch.cdist(x_l, x_p) <= self.edge_cutoff_i)
+        return torch.stack(torch.where(adj))

@@ -103,7 +103,7 @@ class BasicMolecularMetrics(object):
 
     def compute_uniqueness(self, connected):
         """ valid: list of SMILES strings."""
-        if len(connected) < 1 or self.dataset_smiles_list is None:
+        if len(connected) < 1:
             return [], 0.0
 
         return list(set(connected)), len(set(connected)) / len(connected)

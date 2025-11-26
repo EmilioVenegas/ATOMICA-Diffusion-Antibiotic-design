@@ -1,12 +1,13 @@
-run_name: 'pocketcoords-repulsive-v1'
+run_name: 'pocketcoords-connectivity-v2'
 logdir: './my_logs'
 wandb_params:
-  mode: 'disabled'
-  entity: 'my_username'
+  mode: 'online'
+  entity: 'emiliovenegas10-tecnol-gico-de-monterrey'
   group: 'atomica'
+  project: 'atomica-enhanced'
 
 dataset: 'atomica_PL'
-datadir: data/processed_atomica_filtered_pocketcoords2/
+datadir: data/processed_atomica_filtered2/
 atomica_model_config: ATOMICA/pretrain/pretrain_model_config.json
 atomica_model_weights: ATOMICA/pretrain/pretrain_model_weights.pt
 enable_progress_bar: True
@@ -15,7 +16,7 @@ num_sanity_val_steps: 0
 # --- MODEL AND TRAINING PARAMS ---
 mode: 'pocket_conditioning'
 pocket_representation: 'atomica'
-batch_size: 48
+batch_size: 24 # Reduced batch size due to larger model
 lr: 1.0e-4 
 n_epochs: 1000
 num_workers: 8
@@ -31,7 +32,7 @@ gradient_clip_algorithm: 'norm'
 gradient_clip_val: 0.1
 
 # parameter to prioritize geometry
-coord_loss_weight: 1.0
+coord_loss_weight: 1.0 # Rebalanced to prevent over-emphasis on coords vs atom types
 
 auxiliary_loss: False
 loss_params:
@@ -40,11 +41,11 @@ loss_params:
   clamp_lj: 100.0
 
 bond_params:
-  enabled: False # 
-  max_weight: 0.01  # A strong signal to force bonds
-  target_length: 1.7  # Average covalent bond length in Angstroms
-  cutoff_radius: 3.0  # Apply the loss to any pair of atoms closer than 3.0 A
-  clamp_b: 5.0       # Clamp the bond potential to avoid huge losses
+  enabled: False # DISABLED - bond potential was creating disconnected fragments
+  max_weight: 0.1  
+  target_length: 1.5  # Average covalent bond length
+  cutoff_radius: 2.0  # Only apply to close atoms
+  clamp_b: 5.0       
 
 # --- EGNN (DYNAMICS) PARAMS ---
 egnn_params:
@@ -53,9 +54,9 @@ egnn_params:
   edge_cutoff_ligand: null
   edge_cutoff_interaction: 7.0
   reflection_equivariant: True
-  atomica_embed_dim: 32
+  atomica_embed_dim: 32 # Reverted to 32 to match data
   atomica_one_hot_dim: 9
-  hidden_nf: 128
+  hidden_nf: 256 # INCREASED from 128
   n_layers: 6
   attention: True
   tanh: True
@@ -63,8 +64,8 @@ egnn_params:
   norm_constant: 1.0
   inv_sublayers: 1
   sin_embedding: False
-  aggregation_method: 'mean' #mean is more stable
-  normalization_factor: 1 # Not used for 'mean', but set to 1 for safety
+  aggregation_method: 'mean' 
+  normalization_factor: 1 
   edge_embedding_dim: 32
 
 # --- DIFFUSION PARAMS ---

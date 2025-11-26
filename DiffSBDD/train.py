@@ -32,7 +32,18 @@ def merge_args_and_yaml(args, config_dict):
 
 
 def merge_configs(config, resume_config):
+    """
+    Merge resume config with current config.
+    """
+    # List of keys that should NOT be overwritten by the checkpoint
+    # This allows adjusting hardware-dependent parameters (like batch_size) when resuming
+    keys_to_keep = {'batch_size', 'num_workers', 'gpus', 'accumulate_grad_batches', 'gradient_clip_val',
+                    'auxiliary_loss', 'loss_params', 'bond_params', 'coord_loss_weight', 'eval_params'}
+
     for key, value in resume_config.items():
+        if key in keys_to_keep:
+            continue
+            
         if isinstance(value, Namespace):
             value = value.__dict__
         if key in config and config[key] != value:
@@ -50,8 +61,8 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument('--config', type=str, required=True)
     p.add_argument('--resume', type=str, default=None)
-    p.add_argument('--virtual_nodes', action='store_true',
-                   help='Use virtual nodes (default: False)')
+    p.add_argument('--virtual_nodes', action='store_true', default=False,
+                   help='Use virtual nodes (default: True)')
     args = p.parse_args()
 
     with open(args.config, 'r') as f:
@@ -77,23 +88,22 @@ if __name__ == "__main__":
     if 'atomica_model_weights' not in args:
         args.atomica_model_weights = None
         
-    if args.pocket_representation == 'atomica':
-        if 'atomica_embed_dim' not in args.egnn_params:
-            print("Warning: 'atomica_embed_dim' not in egnn_params. Defaulting to 128.")
-            args.egnn_params.atomica_embed_dim = 128
-    # --- END NEW ---
+    # Enforce atomica_embed_dim presence
+    if 'atomica_embed_dim' not in args.egnn_params:
+         print("Warning: 'atomica_embed_dim' not in egnn_params. Defaulting to 128.")
+         args.egnn_params.atomica_embed_dim = 128
+    
 
     out_dir = Path(args.logdir, args.run_name)
+    # Fail loudly if the histogram file is missing
     histogram_file = Path(args.datadir, 'size_distribution.npy')
     if not histogram_file.exists():
-         # --- NEW: Fallback for atomica data ---
-         print(f"Warning: {histogram_file} not found.")
-         print("Using fallback histogram. Please generate a histogram "
-               "for your processed dataset.")
-         # Dummy histogram, replace this
-         histogram = [0.0] + [1.0 / 100] * 100 
-    else:
-        histogram = np.load(histogram_file).tolist()
+         raise FileNotFoundError(
+             f"Critical Error: The node histogram file was not found at {histogram_file}\n"
+             "This file is required for the VLB loss calculation.\n"
+             "Please generate it (e.g., using a preprocessing script) and place it in your datadir."
+         )
+    histogram = np.load(histogram_file).tolist()
         
     pl_module = LigandPocketDDPM(
         outdir=out_dir,
@@ -125,7 +135,7 @@ if __name__ == "__main__":
 
     logger = pl.loggers.WandbLogger(
         save_dir=args.logdir,
-        project='ligand-pocket-ddpm',
+        project=args.wandb_params.project,
         group=args.wandb_params.group,
         name=args.run_name,
         id=args.run_name,
@@ -147,20 +157,21 @@ if __name__ == "__main__":
         max_epochs=args.n_epochs,
         logger=logger,
         callbacks=[checkpoint_callback],
+        precision='16-mixed',
         enable_progress_bar=args.enable_progress_bar,
         num_sanity_val_steps=args.num_sanity_val_steps,
         accelerator='gpu', 
         devices=args.gpus,
         strategy=args.strategy,
         # CRITICAL: Much more aggressive gradient clipping
-        gradient_clip_val=0.5,  # Reduced from 1.0
-        gradient_clip_algorithm='norm',
+        gradient_clip_val=args.gradient_clip_val,
+        gradient_clip_algorithm=args.gradient_clip_algorithm,
         log_every_n_steps=1,
         accumulate_grad_batches=args.accumulate_grad_batches,
         # CRITICAL: Detect NaN gradients
         detect_anomaly=False,  # Set to True for debugging
         # CRITICAL: Use gradient clipping callback
-        val_check_interval=0.25,  # Validate 4 times per epoch
+        val_check_interval=1.0,  # Validate 4 times per epoch
     )
 
     trainer.fit(model=pl_module, ckpt_path=ckpt_path)

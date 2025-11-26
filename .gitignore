@@ -13,3 +13,17 @@ analyze_atomica_dataset.py
 analyze_processed_folder.py
 verification.py
 PL_json_analysis.py
+inspect_histogram.py
+center_data.py
+check_data.py
+DiffSBDD/equivariant_diffusion/geometric_losses.py
+analyze_dataset_statistics.py
+create_2d_histogram.py
+plot_histogram.py
+size_distribution_heatmap.png
+create_2d_histogram.py
+DiffSBDD/analyze_molecule.py
+DiffSBDD/analyze_training.py
+DiffSBDD/diagnose_connectivity.py
+DiffSBDD/test_bond_detection.py
+DiffSBDD/configs/atomica_train_dryrun.yml
