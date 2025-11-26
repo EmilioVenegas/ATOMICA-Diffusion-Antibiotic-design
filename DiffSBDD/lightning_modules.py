@@ -644,11 +644,15 @@ class LigandPocketDDPM(pl.LightningModule):
             getattr(self, 'sample_chain_and_save' + suffix)(
                 self.eval_params.n_visualize_samples)
             print(f'Sample visualization took {time() - tic:.2f} seconds')
+        
+        # Visualize chains
+        if self.current_epoch > 0 and self.current_epoch % self.visualize_chain_epoch == 0:
+            print(f"Visualizing chains at epoch {self.current_epoch}...")
+            torch.cuda.empty_cache()
 
-        if (self.current_epoch + 1) % self.visualize_chain_epoch == 0:
             tic = time()
             getattr(self, 'sample_chain_and_save' + suffix)(
-                self.eval_params.keep_frames)
+                self.eval_params.n_visualize_samples)
             print(f'Chain visualization took {time() - tic:.2f} seconds')
 
     @torch.no_grad()
@@ -833,6 +837,7 @@ class LigandPocketDDPM(pl.LightningModule):
                 )
         # --- FIX END ---
 
+    @torch.no_grad()
     def sample_chain_and_save_given_pocket(self, n_samples):
         # ... (function setup remains the same) ...
         batch = self.val_dataset.collate_fn(
