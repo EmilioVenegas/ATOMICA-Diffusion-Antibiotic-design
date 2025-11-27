@@ -107,19 +107,16 @@ class EquivariantUpdate(nn.Module):
         row, col = edge_index
         h_col = h_col_features if h_col_features is not None else h
         input_tensor = torch.cat([h[row], h_col[col], edge_attr], dim=1)
+        raw_update = self.coord_mlp(input_tensor)
         if self.tanh:
-            # trans = coord_diff * torch.tanh(self.coord_mlp(input_tensor)) * self.coords_range
-            # FIX: Use Scaled Soft Clipping instead of Tanh
-            trans = coord_diff * self.scaled_soft_clip(self.coord_mlp(input_tensor), self.coords_range)
+            trans = coord_diff * torch.tanh(raw_update) * self.coords_range
         else:
-            trans = coord_diff * self.coord_mlp(input_tensor)
+            trans = coord_diff * raw_update
 
         if not self.reflection_equiv and coord_cross is not None:
             phi_cross = self.cross_product_mlp(input_tensor)
             if self.tanh:
-                # phi_cross = torch.tanh(phi_cross) * self.coords_range
-                # FIX: Use Scaled Soft Clipping instead of Tanh
-                phi_cross = self.scaled_soft_clip(phi_cross, self.coords_range)
+                phi_cross = torch.tanh(phi_cross) * self.coords_range
             trans = trans + coord_cross * phi_cross
 
         if edge_mask is not None:
@@ -497,6 +494,7 @@ class InteractionBlock(nn.Module):
                                                   edges_in_d=edge_feat_nf, act_fn=act_fn, attention=attention,
                                                   normalization_factor=self.normalization_factor,
                                                   aggregation_method=self.aggregation_method))
+            self.add_module("gate_net_%d" % i, nn.Linear(self.hidden_nf, self.hidden_nf))
 
         self.add_module("equiv_ll", EquivariantUpdate(hidden_nf, edges_in_d=edge_feat_nf, act_fn=nn.SiLU(), tanh=tanh,
                                                        coords_range=self.coords_range_layer,
@@ -558,7 +556,10 @@ class InteractionBlock(nn.Module):
             
             delta_ll = h_l_ll - h_l
             delta_lp = h_l_lp - h_l
-            h_l = h_l + delta_ll + delta_lp
+            
+            # Gating mechanism
+            alpha = torch.sigmoid(self._modules["gate_net_%d" % i](h_l))
+            h_l = h_l + delta_ll + alpha * delta_lp
 
         # --- Coordinate Updates ---
         x_l_new_ll = self._modules["equiv_ll"].coord_model(
