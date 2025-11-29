@@ -12,27 +12,12 @@ class CategoricalDistribution:
     EPS = 1e-10
 
     def __init__(self, histogram_dict, mapping):
-        
+        histogram = np.zeros(len(mapping))
+        for k, v in histogram_dict.items():
+            histogram[mapping[k]] = v
 
-        # First, check if the input is a dictionary or a numpy array
-        if isinstance(histogram_dict, dict):
-            
-            histogram = np.zeros(len(mapping))
-            for k, v in histogram_dict.items():
-                if k in mapping: # Safety check
-                    histogram[mapping[k]] = v
-        
-        elif isinstance(histogram_dict, np.ndarray):
-            histogram = histogram_dict.copy()
-
-        else:
-            raise TypeError(f"CategoricalDistribution received an unsupported histogram type: {type(histogram_dict)}")
-
-        if histogram.sum() > 0:
-            self.p = histogram / histogram.sum()
-        else:
-            self.p = histogram # Avoid divide-by-zero if histogram is all zeros
-
+        # Normalize histogram
+        self.p = histogram / histogram.sum()
         self.mapping = deepcopy(mapping)
 
     def kl_divergence(self, other_sample):
@@ -103,7 +88,7 @@ class BasicMolecularMetrics(object):
 
     def compute_uniqueness(self, connected):
         """ valid: list of SMILES strings."""
-        if len(connected) < 1:
+        if len(connected) < 1 or self.dataset_smiles_list is None:
             return [], 0.0
 
         return list(set(connected)), len(set(connected)) / len(connected)
