@@ -64,10 +64,15 @@ class EquivariantLayerNorm(nn.Module):
 
             # [batch * sample, mul, repr]
             field = field.reshape(-1, mul, d)
+            
+            if field.dtype in [torch.int32, torch.int64]:
+                field = field.float()
 
             # For scalars first compute and subtract the mean
             if ir.l == 0 and ir.p == 1:
                 # Compute the mean
+                if field.dtype in [torch.int32, torch.int64]:
+                    field = field.float()
                 field_mean = torch.mean(field, dim=1, keepdim=True)  # [batch, mul, 1]]
                 # Subtract the mean
                 field = field - field_mean
