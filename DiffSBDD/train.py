@@ -1,14 +1,11 @@
-import sys
-import os
-
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import argparse
 from argparse import Namespace
 from pathlib import Path
 import warnings
 
 import torch
-torch.set_float32_matmul_precision('high')
+torch.set_float32_matmul_precision('medium')
+torch.set_float32_matmul_precision('medium')
 import pytorch_lightning as pl
 import yaml
 import numpy as np
@@ -32,21 +29,25 @@ def merge_args_and_yaml(args, config_dict):
 
 
 def merge_configs(config, resume_config):
-    """
-    Merge resume config with current config.
-    """
-    # List of keys that should NOT be overwritten by the checkpoint
-    # This allows adjusting hardware-dependent parameters (like batch_size) when resuming
-    keys_to_keep = {'batch_size', 'num_workers', 'gpus', 'accumulate_grad_batches', 'gradient_clip_val',
-                    'auxiliary_loss', 'loss_params', 'bond_params', 'coord_loss_weight', 'eval_params'}
-
     for key, value in resume_config.items():
-        if key in keys_to_keep:
-            continue
-            
         if isinstance(value, Namespace):
             value = value.__dict__
+        
+        # Skip keys that we want to preserve from the new config
+        if key in ['datadir', 'dataset', 'num_workers', 'batch_size', 'accumulate_grad_batches', 'precision']:
+            continue
+
         if key in config and config[key] != value:
+            # Handle nested dictionaries (like egnn_params)
+            if isinstance(config[key], dict) and isinstance(value, dict):
+                # Update the checkpoint dict with the new config's extra keys (e.g. atomica_nf)
+                # But we want to keep the checkpoint's values for existing keys (to match weights)
+                # So we take value (checkpoint) and update it with keys from config[key] that are NOT in value
+                for k, v in config[key].items():
+                    if k not in value:
+                        value[k] = v
+                        print(f"Preserving new config key '{key}.{k}': {v}")
+            
             warnings.warn(f"Config parameter '{key}' (value: "
                           f"{config[key]}) will be overwritten with value "
                           f"{value} from the checkpoint.")
@@ -61,8 +62,6 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument('--config', type=str, required=True)
     p.add_argument('--resume', type=str, default=None)
-    p.add_argument('--virtual_nodes', action='store_true', default=False,
-                   help='Use virtual nodes (default: True)')
     args = p.parse_args()
 
     with open(args.config, 'r') as f:
@@ -80,31 +79,9 @@ if __name__ == "__main__":
 
     args = merge_args_and_yaml(args, config)
 
-    # --- Check for ATOMICA-related args ---
-    if 'atomica_model_path' not in args:
-        args.atomica_model_path = None
-    if 'atomica_model_config' not in args:
-        args.atomica_model_config = None
-    if 'atomica_model_weights' not in args:
-        args.atomica_model_weights = None
-        
-    # Enforce atomica_embed_dim presence
-    if 'atomica_embed_dim' not in args.egnn_params:
-         print("Warning: 'atomica_embed_dim' not in egnn_params. Defaulting to 128.")
-         args.egnn_params.atomica_embed_dim = 128
-    
-
     out_dir = Path(args.logdir, args.run_name)
-    # Fail loudly if the histogram file is missing
     histogram_file = Path(args.datadir, 'size_distribution.npy')
-    if not histogram_file.exists():
-         raise FileNotFoundError(
-             f"Critical Error: The node histogram file was not found at {histogram_file}\n"
-             "This file is required for the VLB loss calculation.\n"
-             "Please generate it (e.g., using a preprocessing script) and place it in your datadir."
-         )
     histogram = np.load(histogram_file).tolist()
-        
     pl_module = LigandPocketDDPM(
         outdir=out_dir,
         dataset=args.dataset,
@@ -126,20 +103,16 @@ if __name__ == "__main__":
         mode=args.mode,
         node_histogram=histogram,
         pocket_representation=args.pocket_representation,
-        virtual_nodes=args.virtual_nodes,
-        # ---  Pass ATOMICA paths ---
-        atomica_model_path=args.atomica_model_path,
-        atomica_model_config=args.atomica_model_config,
-        atomica_model_weights=args.atomica_model_weights
+        virtual_nodes=args.virtual_nodes
     )
 
     logger = pl.loggers.WandbLogger(
         save_dir=args.logdir,
-        project=args.wandb_params.project,
+        project='ligand-pocket-ddpm',
         group=args.wandb_params.group,
         name=args.run_name,
         id=args.run_name,
-        resume='must' if args.resume is not None else False,
+        resume='allow' if args.resume is not None else False,
         entity=args.wandb_params.entity,
         mode=args.wandb_params.mode,
     )
@@ -157,21 +130,15 @@ if __name__ == "__main__":
         max_epochs=args.n_epochs,
         logger=logger,
         callbacks=[checkpoint_callback],
-        precision='16-mixed',
         enable_progress_bar=args.enable_progress_bar,
         num_sanity_val_steps=args.num_sanity_val_steps,
-        accelerator='gpu', 
-        devices=args.gpus,
-        strategy=args.strategy,
-        # CRITICAL: Much more aggressive gradient clipping
-        gradient_clip_val=args.gradient_clip_val,
-        gradient_clip_algorithm=args.gradient_clip_algorithm,
-        log_every_n_steps=1,
-        accumulate_grad_batches=args.accumulate_grad_batches,
-        # CRITICAL: Detect NaN gradients
-        detect_anomaly=False,  # Set to True for debugging
-        # CRITICAL: Use gradient clipping callback
-        val_check_interval=1.0,  # Validate 4 times per epoch
+        accelerator='gpu', devices=args.gpus,
+        strategy=('ddp' if args.gpus > 1 else 'auto'),
+        precision=args.precision
     )
 
-    trainer.fit(model=pl_module, ckpt_path=ckpt_path)
+    if ckpt_path is not None:
+        print(f"Resuming training from checkpoint: {ckpt_path}")
+        trainer.fit(model=pl_module, ckpt_path=str(ckpt_path))
+    else:
+        trainer.fit(model=pl_module)

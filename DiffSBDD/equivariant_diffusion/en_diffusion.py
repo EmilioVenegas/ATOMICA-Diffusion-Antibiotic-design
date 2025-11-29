@@ -1,5 +1,3 @@
-#keep
-
 import math
 from typing import Dict
 
@@ -108,7 +106,53 @@ class EnVariationalDiffusion(nn.Module):
 
         return sigma2_t_given_s, sigma_t_given_s, alpha_t_given_s
 
+    def kl_prior_with_pocket(self, xh_lig, xh_pocket, mask_lig, mask_pocket,
+                             num_nodes):
+        """Computes the KL between q(z1 | x) and the prior p(z1) = Normal(0, 1).
 
+        This is essentially a lot of work for something that is in practice
+        negligible in the loss. However, you compute it so that you see it when
+        you've made a mistake in your noise schedule.
+        """
+        batch_size = len(num_nodes)
+
+        # Compute the last alpha value, alpha_T.
+        ones = torch.ones((batch_size, 1), device=xh_lig.device)
+        gamma_T = self.gamma(ones)
+        alpha_T = self.alpha(gamma_T, xh_lig)
+
+        # Compute means.
+        mu_T_lig = alpha_T[mask_lig] * xh_lig
+        mu_T_lig_x, mu_T_lig_h = mu_T_lig[:, :self.n_dims], \
+                                 mu_T_lig[:, self.n_dims:]
+
+        # Compute standard deviations (only batch axis for x-part, inflated for h-part).
+        sigma_T_x = self.sigma(gamma_T, mu_T_lig_x).squeeze()
+        sigma_T_h = self.sigma(gamma_T, mu_T_lig_h).squeeze()
+
+        # Compute means.
+        mu_T_pocket = alpha_T[mask_pocket] * xh_pocket
+        mu_T_pocket_x, mu_T_pocket_h = mu_T_pocket[:, :self.n_dims], \
+                                       mu_T_pocket[:, self.n_dims:]
+
+        # Compute KL for h-part.
+        zeros_lig = torch.zeros_like(mu_T_lig_h)
+        zeros_pocket = torch.zeros_like(mu_T_pocket_h)
+        ones = torch.ones_like(sigma_T_h)
+        mu_norm2 = self.sum_except_batch((mu_T_lig_h - zeros_lig) ** 2, mask_lig) + \
+                   self.sum_except_batch((mu_T_pocket_h - zeros_pocket) ** 2, mask_pocket)
+        kl_distance_h = self.gaussian_KL(mu_norm2, sigma_T_h, ones, d=1)
+
+        # Compute KL for x-part.
+        zeros_lig = torch.zeros_like(mu_T_lig_x)
+        zeros_pocket = torch.zeros_like(mu_T_pocket_x)
+        ones = torch.ones_like(sigma_T_x)
+        mu_norm2 = self.sum_except_batch((mu_T_lig_x - zeros_lig) ** 2, mask_lig) + \
+                   self.sum_except_batch((mu_T_pocket_x - zeros_pocket) ** 2, mask_pocket)
+        subspace_d = self.subspace_dimensionality(num_nodes)
+        kl_distance_x = self.gaussian_KL(mu_norm2, sigma_T_x, ones, subspace_d)
+
+        return kl_distance_x + kl_distance_h
 
     def compute_x_pred(self, net_out, zt, gamma_t, batch_mask):
         """Commputes x_pred, i.e. the most likely prediction of x."""
@@ -138,11 +182,139 @@ class EnVariationalDiffusion(nn.Module):
 
         return degrees_of_freedom_x * (- log_sigma_x - 0.5 * np.log(2 * np.pi))
 
+    def log_pxh_given_z0_without_constants(
+            self, ligand, z_0_lig, eps_lig, net_out_lig,
+            pocket, z_0_pocket, eps_pocket, net_out_pocket,
+            gamma_0, epsilon=1e-10):
 
+        # Discrete properties are predicted directly from z_t.
+        z_h_lig = z_0_lig[:, self.n_dims:]
+        z_h_pocket = z_0_pocket[:, self.n_dims:]
 
+        # Take only part over x.
+        eps_lig_x = eps_lig[:, :self.n_dims]
+        net_lig_x = net_out_lig[:, :self.n_dims]
+        eps_pocket_x = eps_pocket[:, :self.n_dims]
+        net_pocket_x = net_out_pocket[:, :self.n_dims]
 
+        # Compute sigma_0 and rescale to the integer scale of the data.
+        sigma_0 = self.sigma(gamma_0, target_tensor=z_0_lig)
+        sigma_0_cat = sigma_0 * self.norm_values[1]
 
+        # Computes the error for the distribution
+        # N(x | 1 / alpha_0 z_0 + sigma_0/alpha_0 eps_0, sigma_0 / alpha_0),
+        # the weighting in the epsilon parametrization is exactly '1'.
+        log_p_x_given_z0_without_constants_ligand = -0.5 * (
+            self.sum_except_batch((eps_lig_x - net_lig_x) ** 2, ligand['mask'])
+        )
 
+        log_p_x_given_z0_without_constants_pocket = -0.5 * (
+            self.sum_except_batch((eps_pocket_x - net_pocket_x) ** 2,
+                                  pocket['mask'])
+        )
+
+        # Compute delta indicator masks.
+        # un-normalize
+        ligand_onehot = ligand['one_hot'] * self.norm_values[1] + self.norm_biases[1]
+        pocket_onehot = pocket['one_hot'] * self.norm_values[1] + self.norm_biases[1]
+
+        estimated_ligand_onehot = z_h_lig * self.norm_values[1] + self.norm_biases[1]
+        estimated_pocket_onehot = z_h_pocket * self.norm_values[1] + self.norm_biases[1]
+
+        # Centered h_cat around 1, since onehot encoded.
+        centered_ligand_onehot = estimated_ligand_onehot - 1
+        centered_pocket_onehot = estimated_pocket_onehot - 1
+
+        # Compute integrals from 0.5 to 1.5 of the normal distribution
+        # N(mean=z_h_cat, stdev=sigma_0_cat)
+        log_ph_cat_proportional_ligand = torch.log(
+            self.cdf_standard_gaussian((centered_ligand_onehot + 0.5) / sigma_0_cat[ligand['mask']])
+            - self.cdf_standard_gaussian((centered_ligand_onehot - 0.5) / sigma_0_cat[ligand['mask']])
+            + epsilon
+        )
+        log_ph_cat_proportional_pocket = torch.log(
+            self.cdf_standard_gaussian((centered_pocket_onehot + 0.5) / sigma_0_cat[pocket['mask']])
+            - self.cdf_standard_gaussian((centered_pocket_onehot - 0.5) / sigma_0_cat[pocket['mask']])
+            + epsilon
+        )
+
+        # Normalize the distribution over the categories.
+        log_Z = torch.logsumexp(log_ph_cat_proportional_ligand, dim=1,
+                                keepdim=True)
+        log_probabilities_ligand = log_ph_cat_proportional_ligand - log_Z
+
+        log_Z = torch.logsumexp(log_ph_cat_proportional_pocket, dim=1,
+                                keepdim=True)
+        log_probabilities_pocket = log_ph_cat_proportional_pocket - log_Z
+
+        # Select the log_prob of the current category using the onehot
+        # representation.
+        log_ph_given_z0_ligand = self.sum_except_batch(
+            log_probabilities_ligand * ligand_onehot, ligand['mask'])
+        log_ph_given_z0_pocket = self.sum_except_batch(
+            log_probabilities_pocket * pocket_onehot, pocket['mask'])
+
+        # Combine log probabilities of ligand and pocket for h.
+        log_ph_given_z0 = log_ph_given_z0_ligand + log_ph_given_z0_pocket
+
+        return log_p_x_given_z0_without_constants_ligand, \
+               log_p_x_given_z0_without_constants_pocket, log_ph_given_z0
+
+    def sample_p_xh_given_z0(self, z0_lig, z0_pocket, lig_mask, pocket_mask,
+                             batch_size, fix_noise=False):
+        """Samples x ~ p(x|z0)."""
+        t_zeros = torch.zeros(size=(batch_size, 1), device=z0_lig.device)
+        gamma_0 = self.gamma(t_zeros)
+        # Computes sqrt(sigma_0^2 / alpha_0^2)
+        sigma_x = self.SNR(-0.5 * gamma_0)
+        net_out_lig, net_out_pocket = self.dynamics(
+            z0_lig, z0_pocket, t_zeros, lig_mask, pocket_mask)
+
+        # Compute mu for p(zs | zt).
+        mu_x_lig = self.compute_x_pred(net_out_lig, z0_lig, gamma_0, lig_mask)
+        mu_x_pocket = self.compute_x_pred(net_out_pocket, z0_pocket, gamma_0,
+                                          pocket_mask)
+        xh_lig, xh_pocket = self.sample_normal(mu_x_lig, mu_x_pocket, sigma_x,
+                                               lig_mask, pocket_mask, fix_noise)
+
+        x_lig, h_lig = self.unnormalize(
+            xh_lig[:, :self.n_dims], z0_lig[:, self.n_dims:])
+        x_pocket, h_pocket = self.unnormalize(
+            xh_pocket[:, :self.n_dims], z0_pocket[:, self.n_dims:])
+
+        h_lig = F.one_hot(torch.argmax(h_lig, dim=1), self.atom_nf)
+        h_pocket = F.one_hot(torch.argmax(h_pocket, dim=1), self.residue_nf)
+
+        return x_lig, h_lig, x_pocket, h_pocket
+
+    def sample_normal(self, mu_lig, mu_pocket, sigma, lig_mask, pocket_mask,
+                      fix_noise=False):
+        """Samples from a Normal distribution."""
+        if fix_noise:
+            # bs = 1 if fix_noise else mu.size(0)
+            raise NotImplementedError("fix_noise option isn't implemented yet")
+        eps_lig, eps_pocket = self.sample_combined_position_feature_noise(
+            lig_mask, pocket_mask)
+
+        return mu_lig + sigma[lig_mask] * eps_lig, \
+               mu_pocket + sigma[pocket_mask] * eps_pocket
+
+    def noised_representation(self, xh_lig, xh_pocket, lig_mask, pocket_mask,
+                              gamma_t):
+        # Compute alpha_t and sigma_t from gamma.
+        alpha_t = self.alpha(gamma_t, xh_lig)
+        sigma_t = self.sigma(gamma_t, xh_lig)
+
+        # Sample zt ~ Normal(alpha_t x, sigma_t)
+        eps_lig, eps_pocket = self.sample_combined_position_feature_noise(
+            lig_mask, pocket_mask)
+
+        # Sample z_t given x, h for timestep t, from q(z_t | x, h)
+        z_t_lig = alpha_t[lig_mask] * xh_lig + sigma_t[lig_mask] * eps_lig
+        z_t_pocket = alpha_t[pocket_mask] * xh_pocket + \
+                     sigma_t[pocket_mask] * eps_pocket
+
+        return z_t_lig, z_t_pocket, eps_lig, eps_pocket
 
     def log_pN(self, N_lig, N_pocket):
         """
@@ -154,14 +326,147 @@ class EnVariationalDiffusion(nn.Module):
         Returns:
             log p(N)
         """
-        log_pN = self.size_distribution.log_prob_n1_given_n2(N_lig, N_pocket)
+        log_pN = self.size_distribution.log_prob(N_lig, N_pocket)
         return log_pN
 
     def delta_log_px(self, num_nodes):
         return -self.subspace_dimensionality(num_nodes) * \
                np.log(self.norm_values[0])
 
+    def forward(self, ligand, pocket, return_info=False):
+        """
+        Computes the loss and NLL terms
+        """
+        # Normalize data, take into account volume change in x.
+        ligand, pocket = self.normalize(ligand, pocket)
 
+        # Likelihood change due to normalization
+        delta_log_px = self.delta_log_px(ligand['size'] + pocket['size'])
+
+        # Sample a timestep t for each example in batch
+        # At evaluation time, loss_0 will be computed separately to decrease
+        # variance in the estimator (costs two forward passes)
+        lowest_t = 0 if self.training else 1
+        t_int = torch.randint(
+            lowest_t, self.T + 1, size=(ligand['size'].size(0), 1),
+            device=ligand['x'].device).float()
+        s_int = t_int - 1  # previous timestep
+
+        # Masks: important to compute log p(x | z0).
+        t_is_zero = (t_int == 0).float()
+        t_is_not_zero = 1 - t_is_zero
+
+        # Normalize t to [0, 1]. Note that the negative
+        # step of s will never be used, since then p(x | z0) is computed.
+        s = s_int / self.T
+        t = t_int / self.T
+
+        # Compute gamma_s and gamma_t via the network.
+        gamma_s = self.inflate_batch_array(self.gamma(s), ligand['x'])
+        gamma_t = self.inflate_batch_array(self.gamma(t), ligand['x'])
+
+        # Concatenate x, and h[categorical].
+        xh_lig = torch.cat([ligand['x'], ligand['one_hot']], dim=1)
+        xh_pocket = torch.cat([pocket['x'], pocket['one_hot']], dim=1)
+
+        # Find noised representation
+        z_t_lig, z_t_pocket, eps_t_lig, eps_t_pocket = \
+            self.noised_representation(xh_lig, xh_pocket, ligand['mask'],
+                                       pocket['mask'], gamma_t)
+
+        # Neural net prediction.
+        net_out_lig, net_out_pocket = self.dynamics(
+            z_t_lig, z_t_pocket, t, ligand['mask'], pocket['mask'])
+
+        # For LJ loss term
+        xh_lig_hat = self.xh_given_zt_and_epsilon(z_t_lig, net_out_lig, gamma_t,
+                                                  ligand['mask'])
+
+        # Compute the L2 error.
+        error_t_lig = self.sum_except_batch((eps_t_lig - net_out_lig) ** 2,
+                                            ligand['mask'])
+
+        error_t_pocket = self.sum_except_batch(
+            (eps_t_pocket - net_out_pocket) ** 2, pocket['mask'])
+
+        # Compute weighting with SNR: (1 - SNR(s-t)) for epsilon parametrization
+        SNR_weight = (1 - self.SNR(gamma_s - gamma_t)).squeeze(1)
+        assert error_t_lig.size() == SNR_weight.size()
+
+        # The _constants_ depending on sigma_0 from the
+        # cross entropy term E_q(z0 | x) [log p(x | z0)].
+        neg_log_constants = -self.log_constants_p_x_given_z0(
+            n_nodes=ligand['size'] + pocket['size'], device=error_t_lig.device)
+
+        # The KL between q(zT | x) and p(zT) = Normal(0, 1).
+        # Should be close to zero.
+        kl_prior = self.kl_prior_with_pocket(
+            xh_lig, xh_pocket, ligand['mask'], pocket['mask'],
+            ligand['size'] + pocket['size'])
+
+        if self.training:
+            # Computes the L_0 term (even if gamma_t is not actually gamma_0)
+            # and this will later be selected via masking.
+            log_p_x_given_z0_without_constants_ligand, \
+            log_p_x_given_z0_without_constants_pocket, log_ph_given_z0 = \
+                self.log_pxh_given_z0_without_constants(
+                    ligand, z_t_lig, eps_t_lig, net_out_lig,
+                    pocket, z_t_pocket, eps_t_pocket, net_out_pocket, gamma_t)
+
+            loss_0_x_ligand = -log_p_x_given_z0_without_constants_ligand * \
+                              t_is_zero.squeeze()
+            loss_0_x_pocket = -log_p_x_given_z0_without_constants_pocket * \
+                              t_is_zero.squeeze()
+            loss_0_h = -log_ph_given_z0 * t_is_zero.squeeze()
+
+            # apply t_is_zero mask
+            error_t_lig = error_t_lig * t_is_not_zero.squeeze()
+            error_t_pocket = error_t_pocket * t_is_not_zero.squeeze()
+
+        else:
+            # Compute noise values for t = 0.
+            t_zeros = torch.zeros_like(s)
+            gamma_0 = self.inflate_batch_array(self.gamma(t_zeros), ligand['x'])
+
+            # Sample z_0 given x, h for timestep t, from q(z_t | x, h)
+            z_0_lig, z_0_pocket, eps_0_lig, eps_0_pocket = \
+                self.noised_representation(xh_lig, xh_pocket, ligand['mask'],
+                                           pocket['mask'], gamma_0)
+
+            net_out_0_lig, net_out_0_pocket = self.dynamics(
+                z_0_lig, z_0_pocket, t_zeros, ligand['mask'], pocket['mask'])
+
+            log_p_x_given_z0_without_constants_ligand, \
+            log_p_x_given_z0_without_constants_pocket, log_ph_given_z0 = \
+                self.log_pxh_given_z0_without_constants(
+                    ligand, z_0_lig, eps_0_lig, net_out_0_lig,
+                    pocket, z_0_pocket, eps_0_pocket, net_out_0_pocket, gamma_0)
+            loss_0_x_ligand = -log_p_x_given_z0_without_constants_ligand
+            loss_0_x_pocket = -log_p_x_given_z0_without_constants_pocket
+            loss_0_h = -log_ph_given_z0
+
+        # sample size prior
+        log_pN = self.log_pN(ligand['size'], pocket['size'])
+
+        info = {
+            'eps_hat_lig_x': scatter_mean(
+                net_out_lig[:, :self.n_dims].abs().mean(1), ligand['mask'],
+                dim=0).mean(),
+            'eps_hat_lig_h': scatter_mean(
+                net_out_lig[:, self.n_dims:].abs().mean(1), ligand['mask'],
+                dim=0).mean(),
+            'eps_hat_pocket_x': scatter_mean(
+                net_out_pocket[:, :self.n_dims].abs().mean(1), pocket['mask'],
+                dim=0).mean(),
+            'eps_hat_pocket_h': scatter_mean(
+                net_out_pocket[:, self.n_dims:].abs().mean(1), pocket['mask'],
+                dim=0).mean(),
+        }
+        loss_terms = (delta_log_px, error_t_lig, error_t_pocket, SNR_weight,
+                      loss_0_x_ligand, loss_0_x_pocket, loss_0_h,
+                      neg_log_constants, kl_prior, log_pN,
+                      t_int.squeeze(), xh_lig_hat)
+        return (*loss_terms, info) if return_info else loss_terms
 
     def xh_given_zt_and_epsilon(self, z_t, epsilon, gamma_t, batch_mask):
         """ Equation (7) in the EDM paper """
@@ -171,17 +476,365 @@ class EnVariationalDiffusion(nn.Module):
              alpha_t[batch_mask]
         return xh
 
+    def sample_p_zt_given_zs(self, zs_lig, zs_pocket, ligand_mask, pocket_mask,
+                             gamma_t, gamma_s, fix_noise=False):
+        sigma2_t_given_s, sigma_t_given_s, alpha_t_given_s = \
+            self.sigma_and_alpha_t_given_s(gamma_t, gamma_s, zs_lig)
 
+        mu_lig = alpha_t_given_s[ligand_mask] * zs_lig
+        mu_pocket = alpha_t_given_s[pocket_mask] * zs_pocket
+        zt_lig, zt_pocket = self.sample_normal(
+            mu_lig, mu_pocket, sigma_t_given_s, ligand_mask, pocket_mask,
+            fix_noise)
 
+        # Remove center of mass
+        zt_x = self.remove_mean_batch(
+            torch.cat((zt_lig[:, :self.n_dims], zt_pocket[:, :self.n_dims]),
+                      dim=0),
+            torch.cat((ligand_mask, pocket_mask))
+        )
+        zt_lig = torch.cat((zt_x[:len(ligand_mask)],
+                            zt_lig[:, self.n_dims:]), dim=1)
+        zt_pocket = torch.cat((zt_x[len(ligand_mask):],
+                               zt_pocket[:, self.n_dims:]), dim=1)
 
+        return zt_lig, zt_pocket
 
+    def sample_p_zs_given_zt(self, s, t, zt_lig, zt_pocket, ligand_mask,
+                             pocket_mask, fix_noise=False):
+        """Samples from zs ~ p(zs | zt). Only used during sampling."""
+        gamma_s = self.gamma(s)
+        gamma_t = self.gamma(t)
 
+        sigma2_t_given_s, sigma_t_given_s, alpha_t_given_s = \
+            self.sigma_and_alpha_t_given_s(gamma_t, gamma_s, zt_lig)
 
+        sigma_s = self.sigma(gamma_s, target_tensor=zt_lig)
+        sigma_t = self.sigma(gamma_t, target_tensor=zt_lig)
 
+        # Neural net prediction.
+        eps_t_lig, eps_t_pocket = self.dynamics(
+            zt_lig, zt_pocket, t, ligand_mask, pocket_mask)
 
+        # Compute mu for p(zs | zt).
+        combined_mask = torch.cat((ligand_mask, pocket_mask))
+        self.assert_mean_zero_with_mask(
+            torch.cat((zt_lig[:, :self.n_dims],
+                       zt_pocket[:, :self.n_dims]), dim=0),
+            combined_mask)
+        self.assert_mean_zero_with_mask(
+            torch.cat((eps_t_lig[:, :self.n_dims],
+                       eps_t_pocket[:, :self.n_dims]), dim=0),
+            combined_mask)
 
+        # Note: mu_{t->s} = 1 / alpha_{t|s} z_t - sigma_{t|s}^2 / sigma_t / alpha_{t|s} epsilon
+        # follows from the definition of mu_{t->s} and Equ. (7) in the EDM paper
+        mu_lig = zt_lig / alpha_t_given_s[ligand_mask] - \
+                 (sigma2_t_given_s / alpha_t_given_s / sigma_t)[ligand_mask] * \
+                 eps_t_lig
+        mu_pocket = zt_pocket / alpha_t_given_s[pocket_mask] - \
+                    (sigma2_t_given_s / alpha_t_given_s / sigma_t)[pocket_mask] * \
+                    eps_t_pocket
 
+        # Compute sigma for p(zs | zt).
+        sigma = sigma_t_given_s * sigma_s / sigma_t
 
+        # Sample zs given the paramters derived from zt.
+        zs_lig, zs_pocket = self.sample_normal(mu_lig, mu_pocket, sigma,
+                                               ligand_mask, pocket_mask,
+                                               fix_noise)
+
+        # Project down to avoid numerical runaway of the center of gravity.
+        zs_x = self.remove_mean_batch(
+            torch.cat((zs_lig[:, :self.n_dims],
+                       zs_pocket[:, :self.n_dims]), dim=0),
+            torch.cat((ligand_mask, pocket_mask))
+        )
+        zs_lig = torch.cat((zs_x[:len(ligand_mask)],
+                            zs_lig[:, self.n_dims:]), dim=1)
+        zs_pocket = torch.cat((zs_x[len(ligand_mask):],
+                               zs_pocket[:, self.n_dims:]), dim=1)
+        return zs_lig, zs_pocket
+
+    def sample_combined_position_feature_noise(self, lig_indices,
+                                               pocket_indices):
+        """
+        Samples mean-centered normal noise for z_x, and standard normal noise
+        for z_h.
+        """
+        z_x = self.sample_center_gravity_zero_gaussian_batch(
+            size=(len(lig_indices) + len(pocket_indices), self.n_dims),
+            lig_indices=lig_indices,
+            pocket_indices=pocket_indices
+        )
+        z_h_lig = self.sample_gaussian(
+            size=(len(lig_indices), self.atom_nf),
+            device=lig_indices.device)
+        z_lig = torch.cat([z_x[:len(lig_indices)], z_h_lig], dim=1)
+        z_h_pocket = self.sample_gaussian(
+            size=(len(pocket_indices), self.residue_nf),
+            device=pocket_indices.device)
+        z_pocket = torch.cat([z_x[len(lig_indices):], z_h_pocket], dim=1)
+        return z_lig, z_pocket
+
+    @torch.no_grad()
+    def sample(self, n_samples, num_nodes_lig, num_nodes_pocket,
+               return_frames=1, timesteps=None, device='cpu'):
+        """
+        Draw samples from the generative model. Optionally, return intermediate
+        states for visualization purposes.
+        """
+        timesteps = self.T if timesteps is None else timesteps
+        assert 0 < return_frames <= timesteps
+        assert timesteps % return_frames == 0
+
+        lig_mask = utils.num_nodes_to_batch_mask(n_samples, num_nodes_lig,
+                                                 device)
+        pocket_mask = utils.num_nodes_to_batch_mask(n_samples, num_nodes_pocket,
+                                                    device)
+
+        combined_mask = torch.cat((lig_mask, pocket_mask))
+
+        z_lig, z_pocket = self.sample_combined_position_feature_noise(
+            lig_mask, pocket_mask)
+
+        self.assert_mean_zero_with_mask(
+            torch.cat((z_lig[:, :self.n_dims], z_pocket[:, :self.n_dims]), dim=0),
+            combined_mask
+        )
+
+        out_lig = torch.zeros((return_frames,) + z_lig.size(),
+                              device=z_lig.device)
+        out_pocket = torch.zeros((return_frames,) + z_pocket.size(),
+                                 device=z_pocket.device)
+
+        # Iteratively sample p(z_s | z_t) for t = 1, ..., T, with s = t - 1.
+        for s in reversed(range(0, timesteps)):
+            s_array = torch.full((n_samples, 1), fill_value=s,
+                                 device=z_lig.device)
+            t_array = s_array + 1
+            s_array = s_array / timesteps
+            t_array = t_array / timesteps
+
+            z_lig, z_pocket = self.sample_p_zs_given_zt(
+                s_array, t_array, z_lig, z_pocket, lig_mask, pocket_mask)
+
+            # save frame
+            if (s * return_frames) % timesteps == 0:
+                idx = (s * return_frames) // timesteps
+                out_lig[idx], out_pocket[idx] = \
+                    self.unnormalize_z(z_lig, z_pocket)
+
+        # Finally sample p(x, h | z_0).
+        x_lig, h_lig, x_pocket, h_pocket = self.sample_p_xh_given_z0(
+            z_lig, z_pocket, lig_mask, pocket_mask, n_samples)
+
+        self.assert_mean_zero_with_mask(
+            torch.cat((x_lig, x_pocket), dim=0), combined_mask
+        )
+
+        # Correct CoM drift for examples without intermediate states
+        if return_frames == 1:
+            x = torch.cat((x_lig, x_pocket))
+            max_cog = scatter_add(x, combined_mask, dim=0).abs().max().item()
+            if max_cog > 5e-2:
+                print(f'Warning CoG drift with error {max_cog:.3f}. Projecting '
+                      f'the positions down.')
+                x = self.remove_mean_batch(x, combined_mask)
+                x_lig, x_pocket = x[:len(x_lig)], x[len(x_lig):]
+
+        # Overwrite last frame with the resulting x and h.
+        out_lig[0] = torch.cat([x_lig, h_lig], dim=1)
+        out_pocket[0] = torch.cat([x_pocket, h_pocket], dim=1)
+
+        # remove frame dimension if only the final molecule is returned
+        return out_lig.squeeze(0), out_pocket.squeeze(0), lig_mask, pocket_mask
+
+    def get_repaint_schedule(self, resamplings, jump_length, timesteps):
+        """ Each integer in the schedule list describes how many denoising steps
+        need to be applied before jumping back """
+        repaint_schedule = []
+        curr_t = 0
+        while curr_t < timesteps:
+            if curr_t + jump_length < timesteps:
+                if len(repaint_schedule) > 0:
+                    repaint_schedule[-1] += jump_length
+                    repaint_schedule.extend([jump_length] * (resamplings - 1))
+                else:
+                    repaint_schedule.extend([jump_length] * resamplings)
+                curr_t += jump_length
+            else:
+                residual = (timesteps - curr_t)
+                if len(repaint_schedule) > 0:
+                    repaint_schedule[-1] += residual
+                else:
+                    repaint_schedule.append(residual)
+                curr_t += residual
+
+        return list(reversed(repaint_schedule))
+
+    @torch.no_grad()
+    def inpaint(self, ligand, pocket, lig_fixed, pocket_fixed, resamplings=1,
+                jump_length=1, return_frames=1, timesteps=None):
+        """
+        Draw samples from the generative model while fixing parts of the input.
+        Optionally, return intermediate states for visualization purposes.
+        See:
+        Lugmayr, Andreas, et al.
+        "Repaint: Inpainting using denoising diffusion probabilistic models."
+        Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern
+        Recognition. 2022.
+        """
+        timesteps = self.T if timesteps is None else timesteps
+        assert 0 < return_frames <= timesteps
+        assert timesteps % return_frames == 0
+        assert jump_length == 1 or return_frames == 1, \
+            "Chain visualization is only implemented for jump_length=1"
+
+        if len(lig_fixed.size()) == 1:
+            lig_fixed = lig_fixed.unsqueeze(1)
+        if len(pocket_fixed.size()) == 1:
+            pocket_fixed = pocket_fixed.unsqueeze(1)
+
+        ligand, pocket = self.normalize(ligand, pocket)
+
+        n_samples = len(ligand['size'])
+        combined_mask = torch.cat((ligand['mask'], pocket['mask']))
+        xh0_lig = torch.cat([ligand['x'], ligand['one_hot']], dim=1)
+        xh0_pocket = torch.cat([pocket['x'], pocket['one_hot']], dim=1)
+
+        # Center initial system, subtract COM of known parts
+        mean_known = scatter_mean(
+            torch.cat((ligand['x'][lig_fixed.bool().view(-1)],
+                       pocket['x'][pocket_fixed.bool().view(-1)])),
+            torch.cat((ligand['mask'][lig_fixed.bool().view(-1)],
+                       pocket['mask'][pocket_fixed.bool().view(-1)])),
+            dim=0
+        )
+        xh0_lig[:, :self.n_dims] = \
+            xh0_lig[:, :self.n_dims] - mean_known[ligand['mask']]
+        xh0_pocket[:, :self.n_dims] = \
+            xh0_pocket[:, :self.n_dims] - mean_known[pocket['mask']]
+
+        # Noised representation at step t=T
+        z_lig, z_pocket = self.sample_combined_position_feature_noise(
+            ligand['mask'], pocket['mask'])
+
+        # Output tensors
+        out_lig = torch.zeros((return_frames,) + z_lig.size(),
+                              device=z_lig.device)
+        out_pocket = torch.zeros((return_frames,) + z_pocket.size(),
+                                 device=z_pocket.device)
+
+        # Iteratively sample according to a pre-defined schedule
+        schedule = self.get_repaint_schedule(resamplings, jump_length, timesteps)
+        s = timesteps - 1
+        for i, n_denoise_steps in enumerate(schedule):
+            for j in range(n_denoise_steps):
+                # Denoise one time step: t -> s
+                s_array = torch.full((n_samples, 1), fill_value=s,
+                                     device=z_lig.device)
+                t_array = s_array + 1
+                s_array = s_array / timesteps
+                t_array = t_array / timesteps
+
+                # sample known nodes from the input
+                gamma_s = self.inflate_batch_array(self.gamma(s_array),
+                                                   ligand['x'])
+                z_lig_known, z_pocket_known, _, _ = self.noised_representation(
+                    xh0_lig, xh0_pocket, ligand['mask'], pocket['mask'], gamma_s)
+
+                # sample inpainted part
+                z_lig_unknown, z_pocket_unknown = self.sample_p_zs_given_zt(
+                    s_array, t_array, z_lig, z_pocket, ligand['mask'],
+                    pocket['mask'])
+
+                # move center of mass of the noised part to the center of mass
+                # of the corresponding denoised part before combining them
+                # -> the resulting system should be COM-free
+                com_noised = scatter_mean(
+                    torch.cat((z_lig_known[:, :self.n_dims][lig_fixed.bool().view(-1)],
+                               z_pocket_known[:, :self.n_dims][pocket_fixed.bool().view(-1)])),
+                    torch.cat((ligand['mask'][lig_fixed.bool().view(-1)],
+                               pocket['mask'][pocket_fixed.bool().view(-1)])),
+                    dim=0
+                )
+                com_denoised = scatter_mean(
+                    torch.cat((z_lig_unknown[:, :self.n_dims][lig_fixed.bool().view(-1)],
+                               z_pocket_unknown[:, :self.n_dims][pocket_fixed.bool().view(-1)])),
+                    torch.cat((ligand['mask'][lig_fixed.bool().view(-1)],
+                               pocket['mask'][pocket_fixed.bool().view(-1)])),
+                    dim=0
+                )
+                z_lig_known[:, :self.n_dims] = \
+                    z_lig_known[:, :self.n_dims] + (com_denoised - com_noised)[ligand['mask']]
+                z_pocket_known[:, :self.n_dims] = \
+                    z_pocket_known[:, :self.n_dims] + (com_denoised - com_noised)[pocket['mask']]
+
+                # combine
+                z_lig = z_lig_known * lig_fixed + \
+                        z_lig_unknown * (1 - lig_fixed)
+                z_pocket = z_pocket_known * pocket_fixed + \
+                           z_pocket_unknown * (1 - pocket_fixed)
+
+                self.assert_mean_zero_with_mask(
+                    torch.cat((z_lig[:, :self.n_dims],
+                               z_pocket[:, :self.n_dims]), dim=0), combined_mask
+                )
+
+                # save frame at the end of a resample cycle
+                if n_denoise_steps > jump_length or i == len(schedule) - 1:
+                    if (s * return_frames) % timesteps == 0:
+                        idx = (s * return_frames) // timesteps
+                        out_lig[idx], out_pocket[idx] = \
+                            self.unnormalize_z(z_lig, z_pocket)
+
+                # Noise combined representation
+                if j == n_denoise_steps - 1 and i < len(schedule) - 1:
+                    # Go back jump_length steps
+                    t = s + jump_length
+                    t_array = torch.full((n_samples, 1), fill_value=t,
+                                         device=z_lig.device)
+                    t_array = t_array / timesteps
+
+                    gamma_s = self.inflate_batch_array(self.gamma(s_array),
+                                                       ligand['x'])
+                    gamma_t = self.inflate_batch_array(self.gamma(t_array),
+                                                       ligand['x'])
+
+                    z_lig, z_pocket = self.sample_p_zt_given_zs(
+                        z_lig, z_pocket, ligand['mask'], pocket['mask'],
+                        gamma_t, gamma_s)
+
+                    s = t
+
+                s -= 1
+
+        # Finally sample p(x, h | z_0).
+        x_lig, h_lig, x_pocket, h_pocket = self.sample_p_xh_given_z0(
+            z_lig, z_pocket, ligand['mask'], pocket['mask'], n_samples)
+
+        self.assert_mean_zero_with_mask(
+            torch.cat((x_lig, x_pocket), dim=0), combined_mask
+        )
+
+        # Correct CoM drift for examples without intermediate states
+        if return_frames == 1:
+            x = torch.cat((x_lig, x_pocket))
+            max_cog = scatter_add(x, combined_mask, dim=0).abs().max().item()
+            if max_cog > 5e-2:
+                print(f'Warning CoG drift with error {max_cog:.3f}. Projecting '
+                      f'the positions down.')
+                x = self.remove_mean_batch(x, combined_mask)
+                x_lig, x_pocket = x[:len(x_lig)], x[len(x_lig):]
+
+        # Overwrite last frame with the resulting x and h.
+        out_lig[0] = torch.cat([x_lig, h_lig], dim=1)
+        out_pocket[0] = torch.cat([x_pocket, h_pocket], dim=1)
+
+        # remove frame dimension if only the final molecule is returned
+        return out_lig.squeeze(0), out_pocket.squeeze(0), ligand['mask'], \
+               pocket['mask']
 
     @staticmethod
     def gaussian_KL(q_mu_minus_p_mu_squared, q_sigma, p_sigma, d):
@@ -227,19 +880,17 @@ class EnVariationalDiffusion(nn.Module):
     def normalize(self, ligand=None, pocket=None):
         if ligand is not None:
             ligand['x'] = ligand['x'] / self.norm_values[0]
+
+            # Casting to float in case h still has long or int type.
             ligand['one_hot'] = \
                 (ligand['one_hot'].float() - self.norm_biases[1]) / \
                 self.norm_values[1]
 
         if pocket is not None:
             pocket['x'] = pocket['x'] / self.norm_values[0]
-            
-            # The 'dynamics' object is available here. We check its class to infer the mode.
-            if self.dynamics.__class__.__name__ != 'AtomicaDynamics':
-                 pocket['one_hot'] = \
-                    (pocket['one_hot'].float() - self.norm_biases[1]) / \
-                    self.norm_values[1]
-            # If it IS AtomicaDynamics, we do nothing, leaving the embeddings as they are.
+            pocket['one_hot'] = \
+                (pocket['one_hot'].float() - self.norm_biases[1]) / \
+                self.norm_values[1]
 
         return ligand, pocket
 
@@ -303,89 +954,79 @@ class EnVariationalDiffusion(nn.Module):
         x = torch.randn(size, device=device)
         return x
 
-class DistributionNodes(object):
+
+class DistributionNodes:
     def __init__(self, histogram):
+
         histogram = torch.tensor(histogram).float()
         histogram = histogram + 1e-3  # for numerical stability
 
-        self.is_2d = (len(histogram.shape) == 2)
+        prob = histogram / histogram.sum()
 
-        if self.is_2d:
-            # --- 2D Histogram Logic (for conditional models) ---
-            self.prob_joint = histogram / histogram.sum()
-            self.prob_n2 = self.prob_joint.sum(dim=0) # Marginal probability of pocket size
-            self.prob_n1 = self.prob_joint.sum(dim=1) # Marginal probability of ligand size
+        self.idx_to_n_nodes = torch.tensor(
+            [[(i, j) for j in range(prob.shape[1])] for i in range(prob.shape[0])]
+        ).view(-1, 2)
 
-            # Precompute conditional probabilities P(n1 | n2)
-            self.n1_given_n2 = [
-                torch.distributions.Categorical(self.prob_joint[:, j] / (self.prob_n2[j] + 1e-8), validate_args=False)
-                for j in range(self.prob_joint.shape[1])
-            ]
-            self.m = torch.distributions.Categorical(self.prob_joint.view(-1), validate_args=False)
+        self.n_nodes_to_idx = {tuple(x.tolist()): i
+                               for i, x in enumerate(self.idx_to_n_nodes)}
 
-        else:
-            # --- Original 1D Histogram Logic (for unconditional models) ---
-            self.prob = histogram / histogram.sum()
-            self.m = torch.distributions.Categorical(self.prob, validate_args=False)
+        self.prob = prob
+        self.m = torch.distributions.Categorical(self.prob.view(-1),
+                                                 validate_args=True)
+
+        self.n1_given_n2 = \
+            [torch.distributions.Categorical(prob[:, j], validate_args=True)
+             for j in range(prob.shape[1])]
+        self.n2_given_n1 = \
+            [torch.distributions.Categorical(prob[i, :], validate_args=True)
+             for i in range(prob.shape[0])]
+
+        # entropy = -torch.sum(self.prob.view(-1) * torch.log(self.prob.view(-1) + 1e-30))
+        entropy = self.m.entropy()
+        print("Entropy of n_nodes: H[N]", entropy.item())
 
     def sample(self, n_samples=1):
-        # This is for unconditional sampling, which we are not using.
-        # We can just sample from the marginal ligand distribution for simplicity.
-        prob_to_sample = self.prob_n1 if self.is_2d else self.prob
-        n1 = torch.distributions.Categorical(prob_to_sample, validate_args=False).sample((n_samples,))
-        # The node counts are 1-based, so add 1 to the sampled index.
-        return n1 + 1
-        
-    def sample_conditional(self, n1=None, n2=None, n_samples=1):
-        if not self.is_2d:
-            # Fallback for 1D histogram
-            print("Warning: Attempting conditional sampling with a 1D histogram. Sampling unconditionally.")
-            return self.sample(n_samples)
-            
-        assert (n1 is None) and (n2 is not None), "Must provide n2 (pocket sizes) for conditional sampling."
-        
-        n1_samples = []
-        for pocket_size in n2:
-            # Clamp pocket size to be within the histogram's bounds
-            pocket_idx = min(pocket_size.item() - 1, len(self.n1_given_n2) - 1)
-            
-            if pocket_idx < 0:
-                print(f"Warning: Pocket size {pocket_size.item()} is invalid. Sampling from marginal.")
-                dist = torch.distributions.Categorical(self.prob_n1, validate_args=False)
-            else:
-                dist = self.n1_given_n2[pocket_idx]
+        idx = self.m.sample((n_samples,))
+        num_nodes_lig, num_nodes_pocket = self.idx_to_n_nodes[idx].T
+        return num_nodes_lig, num_nodes_pocket
 
-            # Sample the index (0-based) and add 1 to get the node count (1-based)
-            sampled_n1 = dist.sample() + 1
-            n1_samples.append(sampled_n1)
-        
-        n1 = torch.stack(n1_samples)
-        # Return a tensor of shape [n_samples, 2] for compatibility, even though n2 was input
-        n_nodes = torch.stack((n1, n2.to(n1.device)), dim=1)
-        return n_nodes
+    def sample_conditional(self, n1=None, n2=None):
+        assert (n1 is None) ^ (n2 is None), \
+            "Exactly one input argument must be None"
+
+        m = self.n1_given_n2 if n2 is not None else self.n2_given_n1
+        c = n2 if n2 is not None else n1
+
+        return torch.tensor([m[i].sample() for i in c], device=c.device)
+
+    def log_prob(self, batch_n_nodes_1, batch_n_nodes_2):
+        assert len(batch_n_nodes_1.size()) == 1
+        assert len(batch_n_nodes_2.size()) == 1
+
+        idx = torch.tensor(
+            [self.n_nodes_to_idx[(n1, n2)]
+             for n1, n2 in zip(batch_n_nodes_1.tolist(), batch_n_nodes_2.tolist())]
+        )
+
+        # log_probs = torch.log(self.prob.view(-1)[idx] + 1e-30)
+        log_probs = self.m.log_prob(idx)
+
+        return log_probs.to(batch_n_nodes_1.device)
 
     def log_prob_n1_given_n2(self, n1, n2):
-        # Calculates log P(n1 | n2)
-        if not self.is_2d:
-            # For 1D, P(n1|n2) = P(n1)
-            n1_idx = (n1 - 1).clamp(0, len(self.prob) - 1)
-            return torch.log(self.prob[n1_idx.long()] + 1e-8)
-
-        log_probs = []
-        for i, c in zip(n1, n2):
-            # Clamp indices to be within bounds
-            n1_idx = min(i.item() - 1, self.prob_joint.shape[0] - 1)
-            n2_idx = min(c.item() - 1, self.prob_joint.shape[1] - 1)
-
-            if n1_idx < 0 or n2_idx < 0:
-                log_probs.append(torch.tensor(-30.0)) # Very small log probability
-                continue
-
-            dist = self.n1_given_n2[n2_idx]
-            log_probs.append(dist.log_prob(torch.tensor(n1_idx).to(dist.logits.device)))
-
-        log_probs = torch.stack(log_probs)
+        assert len(n1.size()) == 1
+        assert len(n2.size()) == 1
+        log_probs = torch.stack([self.n1_given_n2[c].log_prob(i.cpu())
+                                 for i, c in zip(n1, n2)])
         return log_probs.to(n1.device)
+
+    def log_prob_n2_given_n1(self, n2, n1):
+        assert len(n2.size()) == 1
+        assert len(n1.size()) == 1
+        log_probs = torch.stack([self.n2_given_n1[c].log_prob(i.cpu())
+                                 for i, c in zip(n2, n1)])
+        return log_probs.to(n2.device)
+
 
 class PositiveLinear(torch.nn.Module):
     """Linear layer with weights forced to be positive."""
