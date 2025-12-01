@@ -825,8 +825,8 @@ class LigandPocketDDPM(pl.LightningModule):
                 [a.get_coord() for a in pocket_atoms]),
                 device=self.device, dtype=FLOAT_TYPE)
             pocket_types = torch.tensor(
-                [self.pocket_type_encoder[a.element.capitalize()]
-                 for a in pocket_atoms], device=self.device)
+            [self.pocket_type_encoder[a.element.capitalize()]
+             for a in pocket_atoms], device=self.device)
 
         pocket_one_hot = F.one_hot(
             pocket_types, num_classes=len(self.pocket_type_encoder)
