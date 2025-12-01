@@ -220,11 +220,13 @@ class RLLoop:
         
         # Simple average (could be weighted in future)
         # Normalize each property to [0, 1] range
-        scores = pd.Series([0.0] * len(df))
-        
+        # Reset index to avoid duplicate label issues
+        df_reset = df.reset_index(drop=True)
+        scores = pd.Series([0.0] * len(df_reset), index=df_reset.index)
+
         for prop in properties:
-            if prop in df.columns:
-                values = df[prop]
+            if prop in df_reset.columns:
+                values = df_reset[prop]
                 # Skip if all NaN
                 if values.notna().any():
                     # Normalize to [0, 1]
@@ -233,8 +235,8 @@ class RLLoop:
                     if max_val > min_val:
                         normalized = (values - min_val) / (max_val - min_val)
                     else:
-                        normalized = pd.Series([0.5] * len(values))
-                    scores += normalized.fillna(0.5)
+                        normalized = pd.Series([0.5] * len(values), index=df_reset.index)
+                    scores = scores + normalized.fillna(0.5)  # Use + instead of +=
         
         # Average across properties
         if len(properties) > 0:
@@ -344,11 +346,19 @@ class RLLoop:
         
         if not admet_scores.empty:
             # Merge ADMET scores
-            df = pd.concat([df, admet_scores.drop(columns=['smiles'], errors='ignore')], axis=1)
+            # Reset index on admet_scores to make SMILES a column, then merge
+            admet_scores_reset = admet_scores.reset_index()
+            if 'smiles' in admet_scores_reset.columns:
+                # Merge on SMILES column
+                df = df.merge(admet_scores_reset, on='smiles', how='left')
+            else:
+                # If SMILES is the index name, rename it
+                admet_scores_reset = admet_scores.reset_index()
+                admet_scores_reset = admet_scores_reset.rename(columns={admet_scores_reset.columns[0]: 'smiles'})
+                df = df.merge(admet_scores_reset, on='smiles', how='left')
             
             # Compute composite score
-            df['composite_score'] = self.compute_composite_score(admet_scores)
-            
+            df['composite_score'] = self.compute_composite_score(df)            
             # Rank molecules
             df = self.rank_by_score(df, score_col='composite_score', ascending=False)
         
