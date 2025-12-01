@@ -1,25 +1,31 @@
-run_name: 'SE3-cond-full'
-logdir: '/path/to/logdir'
+run_name: 'SE3-cond-full-atomica-v8'
+logdir: './my_logs'
 wandb_params:
-  mode: 'online'  # disabled, offline, online
-  entity: 'my_username'
+  mode: 'online'
+  entity: 'emiliovenegas10-tecnol-gico-de-monterrey'
+  group: 'atomica-crossdocked'
+  project: 'atomica-enhanced'
+
 dataset: 'crossdock'
-datadir: '/path/to/processed_crossdock_noH_full'
+datadir: 'data/processed_expert_atomica'
 enable_progress_bar: True
 num_sanity_val_steps: 0
 
 mode: 'pocket_conditioning'  # joint, pocket_conditioning
 pocket_representation: 'full-atom'  # CA, full-atom
-batch_size: 16
-lr: 1.0e-3
+batch_size: 8
+lr: 1.0e-5  # Small LR for fine-tuning with unfrozen backbone
+adapter_lr: 1.0e-4  # Even smaller LR for adapter layers (if using separate rates)
+freeze_backbone: False  # Set to True to freeze backbone, False to fine-tune everything
 noise_factor: 1.0
 n_epochs: 1000
-num_workers: 0
-gpus: 4
+num_workers: 20
+gpus: 1
 clip_grad: True
 augment_rotation: False
 augment_noise: 0
-accumulate_grad_batches: 1
+accumulate_grad_batches: 4
+precision: 32 
 
 auxiliary_loss: False
 loss_params:
@@ -43,6 +49,7 @@ egnn_params:
   sin_embedding: False
   aggregation_method: 'sum'
   normalization_factor: 100 #1  # used if aggregation_method='sum'
+  atomica_nf: 32  # ATOMICA cross-attention feature dimension
 
 diffusion_params:
   diffusion_steps: 500
@@ -51,8 +58,8 @@ diffusion_params:
   diffusion_loss_type: 'l2'  # vlb, l2
   normalize_factors: [1, 4]  #[10, 4]  # [x, h]
 
-eval_epochs: 50
-visualize_sample_epoch: 50
+eval_epochs: 5
+visualize_sample_epoch: 5
 visualize_chain_epoch: 50
 eval_params:
   n_eval_samples: 100
