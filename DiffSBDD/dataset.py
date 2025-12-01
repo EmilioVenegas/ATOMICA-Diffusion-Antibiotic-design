@@ -70,8 +70,9 @@ class ProcessedLigandPocketDataset(Dataset):
         return out
 
 class LigandPocketDatasetPT(Dataset):
-    def __init__(self, data_dir, transform=None):
+    def __init__(self, data_dir, transform=None, center=True):
         self.transform = transform
+        self.center = center
         from pathlib import Path
         self.data_dir = Path(data_dir)
         self.files = sorted(list(self.data_dir.glob('*.pt')))
@@ -102,6 +103,17 @@ class LigandPocketDatasetPT(Dataset):
             
             if 'pocket_atomica_embeddings' in data:
                 data['pocket_atomica_embeddings'] = data['pocket_atomica_embeddings'].float()
+
+            # Check CoM before centering
+            joint_coords = torch.cat([data['lig_coords'], data['pocket_coords']], dim=0)
+            com = joint_coords.mean(dim=0)
+            
+            if self.center:
+                # Force centering
+                data['lig_coords'] = data['lig_coords'] - com
+                data['pocket_coords'] = data['pocket_coords'] - com
+            elif com.norm() > 5.0:
+                print(f"Warning: Data {self.files[idx]} is far from origin (CoM: {com.numpy()}) but centering is disabled!")
                 
             self.cache[idx] = data
 
