@@ -34,7 +34,8 @@ def merge_configs(config, resume_config):
             value = value.__dict__
         
         # Skip keys that we want to preserve from the new config
-        if key in ['datadir', 'dataset', 'num_workers', 'batch_size', 'accumulate_grad_batches', 'precision']:
+        if key in ['datadir', 'dataset', 'num_workers', 'batch_size', 'accumulate_grad_batches', 'precision', 
+                   'lr', 'adapter_lr', 'freeze_backbone']:
             continue
 
         if key in config and config[key] != value:
@@ -88,6 +89,8 @@ if __name__ == "__main__":
         datadir=args.datadir,
         batch_size=args.batch_size,
         lr=args.lr,
+        adapter_lr=getattr(args, 'adapter_lr', args.lr * 0.01),  # Default to 1% of base LR
+        freeze_backbone=getattr(args, 'freeze_backbone', False),  # Default to unfrozen
         egnn_params=args.egnn_params,
         diffusion_params=args.diffusion_params,
         num_workers=args.num_workers,
@@ -103,7 +106,7 @@ if __name__ == "__main__":
         mode=args.mode,
         node_histogram=histogram,
         pocket_representation=args.pocket_representation,
-        virtual_nodes=args.virtual_nodes
+        virtual_nodes=getattr(args, 'virtual_nodes', False)
     )
 
     logger = pl.loggers.WandbLogger(
@@ -138,7 +141,22 @@ if __name__ == "__main__":
     )
 
     if ckpt_path is not None:
-        print(f"Resuming training from checkpoint: {ckpt_path}")
-        trainer.fit(model=pl_module, ckpt_path=str(ckpt_path))
+        print(f"Loading pre-trained weights from: {ckpt_path}")
+        print("Transfer learning mode: loading backbone weights, initializing ATOMICA layers randomly")
+        checkpoint = torch.load(ckpt_path, map_location='cpu')
+        
+        # Load state dict with strict=False to allow missing keys (ATOMICA layers)
+        missing_keys, unexpected_keys = pl_module.load_state_dict(
+            checkpoint['state_dict'], strict=False)
+        
+        if missing_keys:
+            print(f"Initialized {len(missing_keys)} new parameters (ATOMICA layers):")
+            for key in missing_keys[:5]:  # Show first 5
+                print(f"  - {key}")
+            if len(missing_keys) > 5:
+                print(f"  ... and {len(missing_keys) - 5} more")
+        
+        # Train from epoch 0 (transfer learning, not resuming)
+        trainer.fit(model=pl_module)
     else:
         trainer.fit(model=pl_module)
