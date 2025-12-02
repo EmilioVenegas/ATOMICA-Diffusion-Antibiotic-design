@@ -14,47 +14,50 @@ class SE3EquivariantCrossAttention(nn.Module):
         self.k_proj = nn.Linear(pocket_nf, hidden_nf)
         self.v_proj = nn.Linear(pocket_nf, hidden_nf)
         self.out_proj = nn.Linear(hidden_nf, ligand_nf)
-        self.act = act_fn
         self.scale = hidden_nf ** -0.5
+        
+        # Internal projections
+        nn.init.xavier_uniform_(self.q_proj.weight, gain=0.1)
+        nn.init.xavier_uniform_(self.k_proj.weight, gain=0.1)
+        nn.init.xavier_uniform_(self.v_proj.weight, gain=0.1)
+        
+        # Zero init output
+        nn.init.zeros_(self.out_proj.weight)
+        nn.init.zeros_(self.out_proj.bias)
 
-    def forward(self, h_l, x_l, h_p, x_p, mask_l, mask_p):
-        # h_l: (N_l, D_l), x_l: (N_l, 3)
-        # h_p: (N_p, D_p), x_p: (N_p, 3)
+    # REMOVED: x_l and x_p from arguments
+    def forward(self, h_l, h_p, mask_l, mask_p):
+        # 1. Check Embeddings for NaNs
+        if torch.isnan(h_l).any(): h_l = torch.nan_to_num(h_l)
+        if torch.isnan(h_p).any(): h_p = torch.nan_to_num(h_p)
 
-        # 1. Compute Queries, Keys, Values
-        q = self.q_proj(h_l)  # (N_l, H)
-        k = self.k_proj(h_p)  # (N_p, H)
-        v = self.v_proj(h_p)  # (N_p, H)
+        # 2. Projections
+        q = self.q_proj(h_l)
+        k = self.k_proj(h_p)
+        v = self.v_proj(h_p)
 
-        # 2. Compute Attention Scores
-        # Construct mask for valid pairs (same batch index)
-        # mask_l: (N_l,), mask_p: (N_p,)
-        # batch_mask: (N_l, N_p) where True if same batch
+        # 3. Attention Scores
         batch_mask = mask_l[:, None] == mask_p[None, :]
-
-        # Compute dense scores (N_l, N_p)
-        scores = torch.matmul(q, k.transpose(-1, -2)) * self.scale  # (N_l, N_p)
-
-        # Mask out invalid pairs (different batches)
+        scores = torch.matmul(q, k.transpose(-1, -2)) * self.scale
+        scores = torch.clamp(scores, min=-100, max=100)
         scores = scores.masked_fill(~batch_mask, -1e4)
+        attn = F.softmax(scores, dim=1)
 
-        # Softmax over pocket dimension (dim=1)
-        attn = F.softmax(scores, dim=1)  # (N_l, N_p)
-
-        # Mask again to ensure zero attention for invalid pairs
+        # Clean up Softmax NaNs
+        if torch.isnan(attn).any():
+            attn = torch.nan_to_num(attn, nan=0.0)
         attn = attn * batch_mask.float()
 
-        # 3. Semantic Update
-        h_update = torch.matmul(attn, v)  # (N_l, H)
-        h_update = self.out_proj(h_update)  # (N_l, D_l)
+        # 4. Feature Updates Only
+        h_update_internal = torch.matmul(attn, v)
+        h_update = self.out_proj(h_update_internal)
 
-        # 4. Coordinate Update (Equivariant)
-        # vel_i = sum_j attn_ij * (x_l_i - x_p_j)
-        # This is equivalent to: x_l - weighted_center_of_pocket
-        center_p = torch.matmul(attn, x_p)  # (N_l, 3)
-        vel = x_l - center_p
+        # REMOVED: Coordinate calculation (center_p, vel)
+        
+        if torch.isnan(h_update).any():
+            h_update = torch.nan_to_num(h_update)
 
-        return h_update, vel
+        return h_update
 
 class EGNNDynamics(nn.Module):
     def __init__(self, atom_nf, residue_nf,
@@ -75,14 +78,21 @@ class EGNNDynamics(nn.Module):
         self.edge_nf = edge_embedding_dim
         self.atomica_nf = atomica_nf
 
-        if atomica_nf is not None:
+        if atomica_nf:  # Only create cross_attn if atomica_nf > 0
+            # Add LayerNorm for stabilizing attention (with epsilon for numerical stability)
+            self.atomica_norm = nn.LayerNorm(atomica_nf, eps=1e-6)
+
             self.cross_attn = SE3EquivariantCrossAttention(
                 ligand_nf=joint_nf,
                 pocket_nf=atomica_nf,
                 hidden_nf=hidden_nf,
                 act_fn=act_fn
             )
+            
+            # Scale factor to reduce adapter contribution (prevents gradient explosion)
+            self.adapter_scale = 0.1
         else:
+            self.atomica_norm = None
             self.cross_attn = None
 
         self.atom_encoder = nn.Sequential(
@@ -160,33 +170,43 @@ class EGNNDynamics(nn.Module):
         # Semantically-Guided Adapter
         vel_adapter = 0.0
         if self.cross_attn is not None and h_atomica is not None:
-            # h_atoms is the ligand features (before shared encoder? No, user said "ligand features" and "pocket ATOMICA embeddings")
-            # The user said: "Pass ligand features and h_atomica into the Cross-Attention adapter before the main EGNN."
-            # h_atoms here is the raw input features (one-hot etc).
-            # The adapter should probably operate on the raw features or the encoded ones?
-            # "It should take ligand features and pocket ATOMICA embeddings as input."
-            # "compute a semantic feature update for the ligand."
-            # If we update h_atoms here, it will be passed to atom_encoder.
-            # But h_atomica is "rich embeddings".
-            # Let's assume we pass the raw h_atoms (one-hot) to the adapter?
-            # Or maybe we should encode h_atoms first?
-            # The atom_encoder projects to 'joint_nf'.
-            # If we update h_atoms, we change the input to atom_encoder.
-            # But h_update from adapter might not be same dim as h_atoms (one-hot).
-            # Let's look at dimensions.
-            # h_atoms: atom_nf. h_atomica: atomica_nf.
-            # Adapter output h_update: atom_nf (to add to h_atoms).
-            # This seems correct.
+            # Check for NaN/Inf in input embeddings
+            if torch.isnan(h_atomica).any() or torch.isinf(h_atomica).any():
+                print(f"WARNING: NaN/Inf in h_atomica before normalization")
+                h_atomica = torch.nan_to_num(h_atomica, nan=0.0, posinf=1e4, neginf=-1e4)
 
-            h_update, vel_adapter = self.cross_attn(
+            # Normalize ATOMICA embeddings for attention stability
+            # Safe LayerNorm: Check for zero-variance (padding) vectors
+            if self.cross_attn is not None and h_atomica is not None:
+                # Handle NaNs in input
+                h_atomica = torch.nan_to_num(h_atomica)
+                
+                # Apply Norm
+                h_atomica_norm = self.atomica_norm(h_atomica)
+                
+                # FIX: If LayerNorm produced NaNs (due to 0-variance inputs), replace them
+                if torch.isnan(h_atomica_norm).any():
+                    h_atomica_norm = torch.nan_to_num(h_atomica_norm)
+            
+            # Check after normalization
+            if torch.isnan(h_atomica_norm).any() or torch.isinf(h_atomica_norm).any():
+                print(f"WARNING: NaN/Inf in h_atomica after normalization")
+                h_atomica_norm = torch.nan_to_num(h_atomica_norm, nan=0.0, posinf=1e4, neginf=-1e4)
+            
+            h_update = self.cross_attn(
                 h_l=h_atoms,
-                x_l=x_atoms,
-                h_p=h_atomica,
-                x_p=x_residues,
+                h_p=h_atomica_norm,  # Use normalized embeddings
                 mask_l=mask_atoms,
                 mask_p=mask_residues
             )
-            h_atoms = h_atoms + h_update
+            h_atoms = h_atoms + self.adapter_scale * h_update
+            # Check outputs for NaN
+            if torch.isnan(h_update).any():
+                print(f"WARNING: NaN in cross-attention output (h_update)")
+                h_update = torch.nan_to_num(h_update, nan=0.0)
+            
+            # Apply scaled update to prevent gradient explosion
+            h_atoms = h_atoms + self.adapter_scale * h_update
 
         # combine the two node types
         x = torch.cat((x_atoms, x_residues), dim=0)
@@ -226,11 +246,6 @@ class EGNNDynamics(nn.Module):
                                          update_coords_mask=update_coords_mask,
                                          batch_mask=mask, edge_attr=edge_types)
             vel = (x_final - x)
-            if self.cross_attn is not None:
-                # Add adapter velocity to ligand velocity
-                # vel is (N_total, 3). Ligand is first len(mask_atoms).
-                # vel_adapter is (N_l, 3).
-                vel[:len(mask_atoms)] = vel[:len(mask_atoms)] + vel_adapter
 
         elif self.mode == 'gnn_dynamics':
             xh = torch.cat([x, h], dim=1)
@@ -250,8 +265,10 @@ class EGNNDynamics(nn.Module):
         h_final_residues = self.residue_decoder(h_final[len(mask_atoms):])
 
         if torch.any(torch.isnan(vel)):
-            vel[torch.isnan(vel)] = 0.0
-            if not self.training:
+            if self.training:
+                raise RuntimeError("NaN detected in EGNN output during training!")
+            else:
+                vel[torch.isnan(vel)] = 0.0
                 print("WARNING: NaN detected in EGNN output during validation - replacing with zeros")
 
         if self.update_pocket_coords:
@@ -263,22 +280,75 @@ class EGNNDynamics(nn.Module):
                torch.cat([vel[len(mask_atoms):], h_final_residues], dim=-1)
 
     def get_edges(self, batch_mask_ligand, batch_mask_pocket, x_ligand, x_pocket):
-        adj_ligand = batch_mask_ligand[:, None] == batch_mask_ligand[None, :]
-        adj_pocket = batch_mask_pocket[:, None] == batch_mask_pocket[None, :]
-        adj_cross = batch_mask_ligand[:, None] == batch_mask_pocket[None, :]
+        # Optimized: Block-Diagonal Graph Construction
+        edges_list = []
+        
+        # Get unique batch indices
+        n_batches = int(batch_mask_ligand.max()) + 1
+        
+        # Pre-calculate the offset for pocket atoms in the global concatenated tensor
+        # Global structure is: [Ligand_Atoms ... | Pocket_Atoms ...]
+        pocket_offset = len(batch_mask_ligand)
+        
+        for i in range(n_batches):
+            # 1. Find indices for this batch item
+            ligand_indices = torch.nonzero(batch_mask_ligand == i).squeeze(-1)
+            pocket_indices = torch.nonzero(batch_mask_pocket == i).squeeze(-1)
+            
+            # Skip empty batches (if any)
+            if len(ligand_indices) == 0 and len(pocket_indices) == 0:
+                continue
 
-        if self.edge_cutoff_l is not None:
-            adj_ligand = adj_ligand & (torch.cdist(x_ligand, x_ligand) <= self.edge_cutoff_l)
+            # 2. Extract Coordinates for this batch
+            x_l_batch = x_ligand[ligand_indices]
+            x_p_batch = x_pocket[pocket_indices]
+            
+            # 3. Compute Adjacency (Local)
+            # Ligand-Ligand
+            if self.edge_cutoff_l is not None:
+                d_ll = torch.cdist(x_l_batch, x_l_batch)
+                adj_ll = d_ll <= self.edge_cutoff_l
+            else:
+                adj_ll = torch.ones(len(x_l_batch), len(x_l_batch), device=x_l_batch.device, dtype=torch.bool)
+                
+            # Pocket-Pocket
+            if self.edge_cutoff_p is not None:
+                d_pp = torch.cdist(x_p_batch, x_p_batch)
+                adj_pp = d_pp <= self.edge_cutoff_p
+            else:
+                adj_pp = torch.ones(len(x_p_batch), len(x_p_batch), device=x_p_batch.device, dtype=torch.bool)
+                
+            # Cross (Ligand-Pocket)
+            if self.edge_cutoff_i is not None:
+                d_lp = torch.cdist(x_l_batch, x_p_batch)
+                adj_lp = d_lp <= self.edge_cutoff_i
+            else:
+                adj_lp = torch.ones(len(x_l_batch), len(x_p_batch), device=x_l_batch.device, dtype=torch.bool)
 
-        if self.edge_cutoff_p is not None:
-            adj_pocket = adj_pocket & (torch.cdist(x_pocket, x_pocket) <= self.edge_cutoff_p)
+            # 4. Build Block Matrix
+            top = torch.cat([adj_ll, adj_lp], dim=1)
+            bottom = torch.cat([adj_lp.t(), adj_pp], dim=1)
+            adj_batch = torch.cat([top, bottom], dim=0)
+            
+            # 5. Convert to Edge Indices (Local to this batch's subset)
+            src_local, dst_local = torch.where(adj_batch)
+            
+            # 6. Map Local Indices -> Global Indices
+            # CRITICAL FIX: Add offset to pocket indices so they point to the correct
+            # section of the concatenated [Ligand, Pocket] tensors.
+            
+            global_indices = torch.cat([ligand_indices, pocket_indices + pocket_offset])
+            
+            src_global = global_indices[src_local]
+            dst_global = global_indices[dst_local]
+            
+            edges_batch = torch.stack([src_global, dst_global], dim=0)
+            edges_list.append(edges_batch)
 
-        if self.edge_cutoff_i is not None:
-            adj_cross = adj_cross & (torch.cdist(x_ligand, x_pocket) <= self.edge_cutoff_i)
-
-        adj = torch.cat((torch.cat((adj_ligand, adj_cross), dim=1),
-                         torch.cat((adj_cross.T, adj_pocket), dim=1)), dim=0)
-        edges = torch.stack(torch.where(adj), dim=0)
+        if len(edges_list) > 0:
+            edges = torch.cat(edges_list, dim=1)
+        else:
+            edges = torch.empty((2, 0), device=x_ligand.device, dtype=torch.long)
 
         return edges
 

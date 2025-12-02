@@ -18,6 +18,16 @@ from constants import FLOAT_TYPE, INT_TYPE
 from analysis.molecule_builder import build_molecule, process_molecule
 from analysis.metrics import MoleculeProperties
 
+import sys
+import os
+# Ensure root is in path for ATOMICA imports
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+
+from ATOMICA.models.prediction_model import PredictionModel
+from ATOMICA.data.pdb_utils import VOCAB
+from DiffSBDD.utils import format_atomica_batch
+from DiffSBDD.constants import atomica_atom_encoder, atomica_block_encoder
+
 
 def prepare_from_sdf_files(sdf_files, atom_encoder):
 
@@ -71,6 +81,71 @@ def prepare_ligand_from_pdb(biopython_atoms, atom_encoder):
     one_hot = F.one_hot(types, num_classes=len(atom_encoder))
 
     return coord, one_hot
+
+
+def get_atomica_embeddings(biopython_residues, atomica_model, device, pocket_type_encoder):
+    
+    atom_list = [a for res in biopython_residues for a in res.get_atoms()]
+    
+    atomica_input_indices = []
+    atomica_coords = []
+    atom_objects = [] 
+    
+    for atom in atom_list:
+        symbol = atom.element.capitalize()
+        if symbol in atomica_atom_encoder:
+            atomica_input_indices.append(atomica_atom_encoder[symbol])
+            atomica_coords.append(atom.get_coord())
+            atom_objects.append(atom)
+            
+    if not atomica_input_indices:
+        return None
+        
+    # Prepare ATOMICA batch
+    pocket_coords = np.array(atomica_coords)
+    pocket_atomica_types = np.array(atomica_input_indices, dtype=np.int64)
+    
+    # Compute global node position as center of mass
+    global_pos = np.mean(pocket_coords, axis=0)
+    
+    # Prepend global atom
+    pocket_coords_with_global = np.vstack([global_pos, pocket_coords])
+    global_atom_idx = VOCAB.get_atom_global_idx()
+    pocket_atomica_types_with_global = np.concatenate([[global_atom_idx], pocket_atomica_types])
+    
+    # Create block structure
+    global_block_idx = VOCAB.symbol_to_idx(VOCAB.GLB)
+    pocket_B_types = np.array([global_block_idx, atomica_block_encoder.get('UNK', 21)], dtype=np.int64)
+    pocket_block_lengths = np.array([1, len(pocket_atomica_types)], dtype=np.int64)
+    pocket_segment_ids = np.array([0, 0], dtype=np.int64)
+    
+    atomica_batch = format_atomica_batch(
+        pocket_coords_with_global, pocket_atomica_types_with_global,
+        pocket_B_types, pocket_block_lengths,
+        pocket_segment_ids, device
+    )
+    
+    with torch.no_grad():
+        atomica_output = atomica_model.infer(atomica_batch)
+    
+    embeddings = atomica_output.unit_repr.cpu() # (N_atoms + 1, 32)
+    
+    atom_to_embedding = {}
+    for i, atom in enumerate(atom_objects):
+        atom_to_embedding[atom] = embeddings[i+1] # Skip global
+        
+    pocket_embeddings_list = []
+    
+    # Replicate prepare_pocket loop to match atoms
+    for res in biopython_residues:
+        for a in res.get_atoms():
+            if (a.element.capitalize() in pocket_type_encoder or a.element != 'H'):
+                if a in atom_to_embedding:
+                    pocket_embeddings_list.append(atom_to_embedding[a])
+                else:
+                    pocket_embeddings_list.append(torch.zeros(embeddings.shape[1]))
+                    
+    return torch.stack(pocket_embeddings_list).to(device)
 
 
 def prepare_substructure(ref_ligand, fix_atoms, pdb_model):
@@ -160,6 +235,8 @@ if __name__ == "__main__":
     parser.add_argument('--top_k', type=int, default=7)
     parser.add_argument('--outfile', type=Path, default='output.sdf')
     parser.add_argument('--relax', action='store_true')
+    parser.add_argument('--atomica_config', type=str, default='ATOMICA/pretrain/pretrain_model_config.json')
+    parser.add_argument('--atomica_weights', type=str, default='ATOMICA/pretrain/pretrain_model_weights.pt')
 
 
     args = parser.parse_args()
@@ -175,6 +252,17 @@ if __name__ == "__main__":
     model = LigandPocketDDPM.load_from_checkpoint(
         args.checkpoint, map_location=device)
     model = model.to(device)
+    
+    # Load ATOMICA model if needed
+    atomica_model = None
+    if getattr(model.hparams.egnn_params, 'atomica_nf', 0) > 0:
+        print("Loading ATOMICA model...")
+        try:
+            atomica_model = PredictionModel.load_from_config_and_weights(args.atomica_config, args.atomica_weights).to(device).eval()
+            print("ATOMICA model loaded successfully.")
+        except Exception as e:
+            print(f"Warning: Failed to load ATOMICA model: {e}")
+            print("Optimization might fail if the model expects embeddings.")
 
     # Prepare ligand + pocket
     # Load PDB
@@ -182,6 +270,15 @@ if __name__ == "__main__":
     # Define pocket based on reference ligand
     residues = utils.get_pocket_from_ligand(pdb_model, args.ref_ligand)
     pocket = model.prepare_pocket(residues, repeats=population_size)
+    
+    if atomica_model is not None:
+        print("Computing ATOMICA embeddings for pocket...")
+        atomica_embeddings = get_atomica_embeddings(residues, atomica_model, device, model.pocket_type_encoder)
+        if atomica_embeddings is not None:
+            # Repeat embeddings for the batch
+            # pocket['x'] is (repeats * N_pocket, 3)
+            # atomica_embeddings is (N_pocket, 32)
+            pocket['atomica_embeddings'] = atomica_embeddings.repeat(population_size, 1)
 
 
     if args.objective == 'qed':
@@ -196,13 +293,13 @@ if __name__ == "__main__":
     ref_mol = Chem.SDMolSupplier(args.ref_ligand)[0]
 
     # Store molecules in history dataframe 
-    buffer = pd.DataFrame(columns=['generation', 'score', 'fate' 'mol', 'smiles'])
+    buffer = pd.DataFrame(columns=['generation', 'score', 'fate', 'mol', 'smiles'])
 
     # Population initialization
-    buffer = buffer.append({'generation': 0,
+    buffer = pd.concat([buffer, pd.DataFrame([{'generation': 0,
                             'score': objective_function(ref_mol),
                             'fate': 'initial', 'mol': ref_mol,
-                            'smiles': Chem.MolToSmiles(ref_mol)}, ignore_index=True)
+                            'smiles': Chem.MolToSmiles(ref_mol)}])], ignore_index=True)
 
     for generation_idx in range(evolution_steps):
 
@@ -235,11 +332,11 @@ if __name__ == "__main__":
         
         # Evaluate and save molecules
         for mol in molecules:
-            buffer = buffer.append({'generation': generation_idx + 1,
+            buffer = pd.concat([buffer, pd.DataFrame([{'generation': generation_idx + 1,
             'score': objective_function(mol),
             'fate': 'purged',
             'mol': mol,
-            'smiles': Chem.MolToSmiles(mol)}, ignore_index=True)
+            'smiles': Chem.MolToSmiles(mol)}])], ignore_index=True)
 
 
     # Make SDF files

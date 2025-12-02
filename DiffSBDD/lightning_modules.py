@@ -41,6 +41,8 @@ class LigandPocketDDPM(pl.LightningModule):
             datadir,
             batch_size,
             lr,
+            adapter_lr,
+            freeze_backbone,
             egnn_params: Namespace,
             diffusion_params,
             num_workers,
@@ -76,6 +78,8 @@ class LigandPocketDDPM(pl.LightningModule):
         self.eval_batch_size = eval_params.eval_batch_size \
             if 'eval_batch_size' in eval_params else batch_size
         self.lr = lr
+        self.adapter_lr = adapter_lr
+        self.freeze_backbone = freeze_backbone
         self.loss_type = diffusion_params.diffusion_loss_type
         self.eval_epochs = eval_epochs
         self.visualize_sample_epoch = visualize_sample_epoch
@@ -164,8 +168,8 @@ class LigandPocketDDPM(pl.LightningModule):
             atomica_nf=egnn_params.__dict__.get('atomica_nf')
         )
 
-        if egnn_params.__dict__.get('atomica_nf') is not None:
-            print("Freezing backbone for Semantically-Guided Training...")
+        if egnn_params.__dict__.get('atomica_nf') is not None and self.freeze_backbone:
+            print("Freezing backbone for ATOMICA adapter training...")
             net_dynamics.freeze_backbone()
 
         self.ddpm = ddpm_models[self.mode](
@@ -191,8 +195,61 @@ class LigandPocketDDPM(pl.LightningModule):
                 max_weight=loss_params.max_weight, mode=loss_params.schedule)
 
     def configure_optimizers(self):
-        return torch.optim.AdamW(self.ddpm.parameters(), lr=self.lr,
-                                 amsgrad=True, weight_decay=1e-12)
+        # 1. Safety Check: Freeze backbone if configured
+        if hasattr(self.ddpm.dynamics, 'freeze_backbone') and \
+           getattr(self.ddpm.dynamics, 'atomica_nf', None) and self.freeze_backbone:
+             self.ddpm.dynamics.freeze_backbone()
+
+        # 2. Separate learning rates for backbone vs adapter (if using adapter)
+        if hasattr(self.ddpm.dynamics, 'cross_attn') and self.ddpm.dynamics.cross_attn is not None:
+            # Adapter layers need different LR
+            adapter_params = []
+            backbone_params = []
+            
+            for name, param in self.ddpm.named_parameters():
+                if not param.requires_grad:
+                    continue
+                    
+                # Adapter layers: layernorm and cross_attn
+                if 'atomica_norm' in name or 'cross_attn' in name:
+                    adapter_params.append(param)
+                else:
+                    backbone_params.append(param)
+            
+            # Use config-specified learning rates
+            param_groups = [
+                {'params': backbone_params, 'lr': self.lr},
+                {'params': adapter_params, 'lr': self.adapter_lr}
+            ]
+            
+            print(f"Using dual learning rates: backbone={self.lr:.2e}, adapter={self.adapter_lr:.2e}")
+            print(f"Freeze backbone: {self.freeze_backbone}")
+            print(f"Adapter params: {len(adapter_params)}, Backbone params: {len(backbone_params)}")
+            
+            return torch.optim.AdamW(param_groups, amsgrad=True, weight_decay=1e-12)
+        else:
+            # No adapter, use standard optimization
+            params_to_update = filter(lambda p: p.requires_grad, self.ddpm.parameters())
+            return torch.optim.AdamW(params_to_update, lr=self.lr,
+                                     amsgrad=True, weight_decay=1e-12)
+
+    def on_before_optimizer_step(self, optimizer):
+        # Check adapter gradients
+        if hasattr(self.ddpm.dynamics, 'cross_attn') and self.ddpm.dynamics.cross_attn is not None:
+            total_norm = 0.0
+            max_grad = 0.0
+            for name, p in self.ddpm.dynamics.cross_attn.named_parameters():
+                if p.grad is not None:
+                    param_norm = p.grad.detach().data.norm(2)
+                    total_norm += param_norm.item() ** 2
+                    max_grad = max(max_grad, p.grad.detach().data.abs().max().item())
+            total_norm = total_norm ** 0.5
+            
+            self.log('grad/adapter_norm', total_norm, prog_bar=True)
+            self.log('grad/adapter_max', max_grad, prog_bar=True)
+            
+            if total_norm == 0.0:
+                print("WARNING: Adapter gradients are ZERO!")
 
     def setup(self, stage: Optional[str] = None):
         if stage == 'fit':
@@ -283,7 +340,7 @@ class LigandPocketDDPM(pl.LightningModule):
         kl_prior, log_pN, t_int, xh_lig_hat, info = \
             self.ddpm(ligand, pocket, return_info=True)
 
-        if self.loss_type == 'l2' and self.training:
+        if self.loss_type == 'l2':
             actual_ligand_size = ligand['size'] - ligand['num_virtual_atoms'] if self.virtual_nodes else ligand['size']
 
             # normalize loss_t
@@ -309,7 +366,7 @@ class LigandPocketDDPM(pl.LightningModule):
         nll = loss_t + loss_0 + kl_prior
 
         # Correct for normalization on x.
-        if not (self.loss_type == 'l2' and self.training):
+        if not (self.loss_type == 'l2'):
             nll = nll - delta_log_px
 
             # always the same number of nodes if virtual nodes are added
@@ -322,7 +379,7 @@ class LigandPocketDDPM(pl.LightningModule):
                 nll = nll - log_pN
 
         # Add auxiliary loss term
-        if self.auxiliary_loss and self.loss_type == 'l2' and self.training:
+        if self.auxiliary_loss and self.loss_type == 'l2':
             x_lig_hat = xh_lig_hat[:, :self.x_dims]
             h_lig_hat = xh_lig_hat[:, self.x_dims:]
             weighted_lj_potential = \
@@ -768,8 +825,8 @@ class LigandPocketDDPM(pl.LightningModule):
                 [a.get_coord() for a in pocket_atoms]),
                 device=self.device, dtype=FLOAT_TYPE)
             pocket_types = torch.tensor(
-                [self.pocket_type_encoder[a.element.capitalize()]
-                 for a in pocket_atoms], device=self.device)
+            [self.pocket_type_encoder[a.element.capitalize()]
+             for a in pocket_atoms], device=self.device)
 
         pocket_one_hot = F.one_hot(
             pocket_types, num_classes=len(self.pocket_type_encoder)

@@ -135,7 +135,7 @@ def batch_to_list(data, batch_mask):
     # return data_list
 
     # make sure batch_mask is increasing
-    idx = torch.argsort(batch_mask)
+    idx = torch.argsort(batch_mask).to(data.device)
     batch_mask = batch_mask[idx]
     data = data[idx]
 
