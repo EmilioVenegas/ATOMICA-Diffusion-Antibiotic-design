@@ -1,163 +1,132 @@
-# RL Loop for ADMET-AI Guided Ligand Optimization
+RL Loop for ADMET-AI Guided Ligand Optimization
+Purpose
 
-## Purpose
+This directory implements the first fully working end-to-end pipeline for evaluating diffusion-generated ligands using ADMET-AI. This pipeline was validated on the MIT ORCD GPU cluster and successfully performs:
 
-This directory contains the initial implementation of a reinforcement learning (RL) feedback loop for optimizing generated ligands. The pipeline:
+Ligand generation using DiffSBDD (training-refactor branch)
 
-1. Loads ligand molecules (from SDF files)
-2. Converts them to SMILES strings
-3. Scores them using ADMET-AI predictions
-4. Ranks molecules by their predicted ADMET properties
+SDF export to rl_loop/examples/
 
-This is the **first step** toward a full RL optimization loop that will guide the diffusion model to generate molecules with improved drug-like properties.
+ADMET-AI scoring & ranking using RL_loop.py
 
-## Directory Structure
+CSV output to rl_loop/results/
 
-```
+This enables iterative ligand design workflows and establishes the foundation for a future reinforcement learning optimization loop.
+
+Directory Structure
 rl_loop/
-├── README.md              # This file
-├── RL_loop.py            # Main RL loop implementation
-├── examples/             # Example input ligands (SDF files)
-│   └── .gitkeep
-└── results/              # Scored and ranked output
-    └── .gitkeep
-```
+├── README.md                # This file
+├── RL_loop.py               # Main scoring and ranking logic
+├── mock_generate_ligands.py # Utility for testing without DiffSBDD
+├── examples/                # Input ligand SDF files (generated externally)
+│   ├── .gitkeep
+│   └── generated_from_refactor.sdf      # Example generated ligands (committed manually)
+└── results/                 # Scored output CSV files
+    ├── .gitkeep
+    └── generated_from_refactor_scored.csv  # Example scored results
 
-## Requirements
 
-Install required packages:
+Note:
+Large generated files are normally ignored by .gitignore, but the above two example files were intentionally force-added using git add -f to serve as a canonical demonstration of the working pipeline.
 
-```bash
-# If using the DiffSBDD conda environment:
+Requirements
+
+Inside the DiffSBDD conda environment:
+
 conda activate diffsbdd
-pip install admet-ai pyarrow
+pip install admet-ai pyarrow rdkit-pypi pandas
 
-# Or install standalone:
-pip install rdkit-pypi admet-ai pandas pyarrow
-```
 
-## Usage
+(ADMET-AI requires Python ≥3.8 and works fine inside the diffsbdd environment.)
 
-### Basic Example
+Full Working Pipeline (validated)
+1. Generate ligands using training-refactor + last_ckpt.ckpt:
 
-Score example ligands from DiffSBDD:
+From the cluster GPU node:
 
-```bash
+cd ~/ATOMICA-Diffusion-Antibiotic-design/DiffSBDD
+
+python generate_ligands.py checkpoints/last_ckpt.ckpt \
+    --pdbfile example/3rfm.pdb \
+    --ref_ligand A:330 \
+    --outfile ../rl_loop/examples/generated_from_refactor.sdf \
+    --n_samples 100
+
+
+This produces:
+
+rl_loop/examples/generated_from_refactor.sdf
+
+2. Score ligands with ADMET-AI:
+
+From repo root:
+
+cd ~/ATOMICA-Diffusion-Antibiotic-design
+
 python rl_loop/RL_loop.py \
-  --input_dir DiffSBDD/example \
-  --output results/scored_ligands.csv
-```
+    --input rl_loop/examples/generated_from_refactor.sdf \
+    --output rl_loop/results/generated_from_refactor_scored.csv
 
-### Score Generated Ligands
 
-After running `generate_ligands.py`:
+Which produces:
 
-```bash
-# 1. Generate ligands (from DiffSBDD directory)
-python generate_ligands.py checkpoints/model.ckpt \
-  --pdbfile example/3rfm.pdb \
-  --outfile ../rl_loop/examples/generated_ligands.sdf \
-  --ref_ligand A:330 \
-  --n_samples 100
+rl_loop/results/generated_from_refactor_scored.csv
 
-# 2. Score them
-python rl_loop/RL_loop.py \
-  --input ../rl_loop/examples/generated_ligands.sdf \
-  --output results/scored_generated.csv
-```
 
-### Command-Line Options
+Both of these files were included in this branch as working examples.
 
-```
---input, -i          Input SDF file or directory containing SDF files
---output, -o         Output CSV file with scores and rankings
---top_k, -k          Number of top molecules to save (default: all)
---admet_props        Comma-separated list of ADMET properties to use for ranking
-                     (default: all available)
-```
+Command-Line Options
+--input, -i      Input SDF file (single file)
+--output, -o     Output CSV path
+--top_k, -k      How many top molecules to keep (default: all)
+--admet_props    Comma-separated ADMET properties to rank by (default: all)
 
-## Output Format
+Output Format
 
-The output CSV contains:
+The CSV contains:
 
-| Column | Description |
-|--------|-------------|
-| `molecule_id` | Unique identifier (filename + mol index) |
-| `smiles` | SMILES string representation |
-| `rank` | Overall rank (1 = best) |
-| `composite_score` | Weighted average of ADMET properties |
-| `[ADMET properties]` | Individual ADMET-AI predictions (e.g., Solubility, Clearance, hERG, etc.) |
-
-## Next Steps
-
-Future enhancements for the RL loop:
-
-1. **Scoring Integration**: Add SA score and Brenk structural alerts
-2. **Multi-objective Optimization**: Define composite reward function
-3. **Diffusion Model Feedback**: Use scores to guide generation
-4. **Active Learning**: Iteratively generate and score batches
-5. **Visualization**: Plot property distributions and trends
-
-## Example Workflow
-
-```python
+Column	Description
+molecule_id	Unique identifier for each molecule
+smiles	SMILES representation
+rank	Rank sorted by composite_score
+composite_score	Weighted score across ADMET properties
+[ADMET props]	Individual ADMET-AI predictions
+Example Python API Usage
 from rl_loop.RL_loop import RLLoop
 
-# Initialize
 rl = RLLoop()
 
-# Load and score molecules
-molecules = rl.load_molecules_from_sdf("examples/ligands.sdf")
-smiles = rl.convert_to_smiles(molecules)
+mols = rl.load_molecules_from_sdf("examples/generated_from_refactor.sdf")
+smiles = rl.convert_to_smiles(mols)
 scores = rl.score_with_admet(smiles)
 
-# Rank and save
 ranked = rl.rank_by_score(scores)
-rl.save_results(ranked, "results/output.csv")
-```
+rl.save_results(ranked, "results/example_output.csv")
 
-## TODO / Known Issues
+Next Steps (Roadmap)
 
-### High Priority
+These items were discussed but NOT implemented yet in this working branch.
 
-1. **Dependency Resolution & Dockerization**
-   - [ ] Resolve torch-scatter compatibility issues with PyTorch 2.0.1 + CUDA 11.8
-   - [ ] Create Docker container for unified DiffSBDD + RL loop environment
-   - [ ] Ensure `generate_ligands.py` can run reliably to produce ligand distributions
-   - [ ] Test end-to-end pipeline: `generate_ligands.py` → SDF → `RL_loop.py`
-   - [ ] Document Windows-specific installation workarounds
+High Priority
 
-2. **Ranking Validation**
-   - [ ] Validate composite score ranking aligns with expected drug-likeness on larger molecule sets
-   - [ ] Test ranking consistency across different ADMET property combinations
-   - [ ] Compare rankings with expert-curated reference sets
-   - [ ] Add unit tests for ranking logic with known good/bad molecules
+ Integrate SA score & Brenk structural alerts
 
-### Medium Priority
+ Define multi-objective composite scoring
 
-3. **Scoring Enhancements**
-   - [ ] Integrate SA (Synthetic Accessibility) score
-   - [ ] Add Brenk structural alerts detection
-   - [ ] Implement weighted composite scoring (custom property importance)
-   - [ ] Add property-specific filtering (e.g., exclude high hERG risk)
+ Stabilize scoring on large ligand sets
 
-4. **Integration**
-   - [ ] Direct integration with `generate_ligands.py` (avoid intermediate SDF files)
-   - [ ] Real-time scoring during generation
-   - [ ] Feedback loop to guide diffusion model sampling
+ Add unit tests for ranking
 
-### Low Priority
+Medium Priority
 
-5. **Performance & Usability**
-   - [ ] Batch processing for large ligand sets
-   - [ ] Progress bars and logging improvements
-   - [ ] Visualization of property distributions
-   - [ ] Export top molecules back to SDF format
+ Weighted scoring configuration
 
+ Property-specific filtering (e.g., hERG)
 
-## References
+ Visualization tools for property distributions
 
-- **DiffSBDD**: Structure-based diffusion model for drug design
-- **ADMET-AI**: Deep learning for ADMET property prediction
-- **RDKit**: Cheminformatics toolkit for molecule processing
+Low Priority
 
+ Logging / progress indicators
+
+ Batch scoring optimization
