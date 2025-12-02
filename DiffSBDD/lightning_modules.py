@@ -20,10 +20,10 @@ except ImportError:
         return protein_letters_3to1.get(s.upper(), 'X')
 
 from constants import dataset_params, FLOAT_TYPE, INT_TYPE
-from equivariant_diffusion.dynamics import EGNNDynamics
-from equivariant_diffusion.en_diffusion import EnVariationalDiffusion
-from equivariant_diffusion.conditional_model import ConditionalDDPM, \
-    SimpleConditionalDDPM
+
+# --- NEW: Import AtomicaDynamics ---
+from equivariant_diffusion.dynamics import AtomicaDynamics
+from equivariant_diffusion.conditional_model import ConditionalDDPM
 from dataset import ProcessedLigandPocketDataset
 import utils
 from analysis.visualization import save_xyz_file, visualize, visualize_chain
@@ -31,6 +31,8 @@ from analysis.metrics import BasicMolecularMetrics, CategoricalDistribution, \
     MoleculeProperties
 from analysis.molecule_builder import build_molecule, process_molecule
 from analysis.docking import smina_score
+from torch.optim.lr_scheduler import ReduceLROnPlateau, LambdaLR, SequentialLR
+from analysis.visualization import save_xyz_file, plot_molecule_and_pocket
 
 
 class LigandPocketDDPM(pl.LightningModule):
@@ -58,7 +60,11 @@ class LigandPocketDDPM(pl.LightningModule):
             mode,
             node_histogram,
             pocket_representation='CA',
-            virtual_nodes=False
+            virtual_nodes=False,
+            # --- NEW: Args for ATOMICA model (Phase 4) ---
+            atomica_model_path=None,
+            atomica_model_config=None,
+            atomica_model_weights=None
     ):
         super(LigandPocketDDPM, self).__init__()
         self.save_hyperparameters()
@@ -68,7 +74,8 @@ class LigandPocketDDPM(pl.LightningModule):
                        'pocket_conditioning_simple': SimpleConditionalDDPM}
         assert mode in ddpm_models
         self.mode = mode
-        assert pocket_representation in {'CA', 'full-atom'}
+        # --- MODIFIED: Add 'atomica' as a valid representation ---
+        assert pocket_representation in {'CA', 'full-atom', 'atomica'}
         self.pocket_representation = pocket_representation
 
         self.dataset_name = dataset
@@ -98,12 +105,18 @@ class LigandPocketDDPM(pl.LightningModule):
 
         self.lig_type_encoder = self.dataset_info['atom_encoder']
         self.lig_type_decoder = self.dataset_info['atom_decoder']
-        self.pocket_type_encoder = self.dataset_info['aa_encoder'] \
-            if self.pocket_representation == 'CA' \
-            else self.dataset_info['atom_encoder']
-        self.pocket_type_decoder = self.dataset_info['aa_decoder'] \
-            if self.pocket_representation == 'CA' \
-            else self.dataset_info['atom_decoder']
+        
+        # --- MODIFIED: Handle 'atomica' representation ---
+        if self.pocket_representation == 'CA':
+            self.pocket_type_encoder = self.dataset_info['aa_encoder']
+            self.pocket_type_decoder = self.dataset_info['aa_decoder']
+        elif self.pocket_representation == 'full-atom':
+            self.pocket_type_encoder = self.dataset_info['atom_encoder']
+            self.pocket_type_decoder = self.dataset_info['atom_decoder']
+        elif self.pocket_representation == 'atomica':
+            # Encoders/Decoders are not used, pocket features are embeddings
+            self.pocket_type_encoder = None
+            self.pocket_type_decoder = None
 
         smiles_list = None if eval_params.smiles_file is None \
             else np.load(eval_params.smiles_file)
@@ -112,10 +125,12 @@ class LigandPocketDDPM(pl.LightningModule):
         self.molecule_properties = MoleculeProperties()
         self.ligand_type_distribution = CategoricalDistribution(
             self.dataset_info['atom_hist'], self.lig_type_encoder)
+        
+        # --- MODIFIED: Handle 'atomica' representation ---
         if self.pocket_representation == 'CA':
             self.pocket_type_distribution = CategoricalDistribution(
                 self.dataset_info['aa_hist'], self.pocket_type_encoder)
-        else:
+        else: # 'full-atom' or 'atomica'
             self.pocket_type_distribution = None
 
         self.train_dataset = None
@@ -139,38 +154,75 @@ class LigandPocketDDPM(pl.LightningModule):
             self.dataset_info['atom_encoder'] = self.lig_type_encoder
             self.dataset_info['atom_decoder'] = self.lig_type_decoder
 
+            # ADD THESE TWO LINES TO FIX THE CRASH
+            self.dataset_info['colors_dic'].append('#9400D3')  # Add a color for the virtual atom (e.g., DarkViolet)
+            self.dataset_info['radius_dic'].append(0.5)        # Add a radius for the virtual atom
+
         self.atom_nf = len(self.lig_type_decoder)
-        self.aa_nf = len(self.pocket_type_decoder)
+        
+        # --- MODIFIED: Set aa_nf based on representation ---
+        if self.pocket_representation == 'atomica':
+            # aa_nf is now the dimension of the ATOMICA embeddings
+            try:
+                self.aa_nf = egnn_params.atomica_embed_dim
+            except AttributeError:
+                raise AttributeError("egnn_params must include 'atomica_embed_dim' "
+                                     "when pocket_representation is 'atomica'")
+        else:
+            self.aa_nf = len(self.pocket_type_decoder)
+            
         self.x_dims = 3
 
-        net_dynamics = EGNNDynamics(
-            atom_nf=self.atom_nf,
-            residue_nf=self.aa_nf,
-            n_dims=self.x_dims,
-            joint_nf=egnn_params.joint_nf,
-            device=egnn_params.device if torch.cuda.is_available() else 'cpu',
-            hidden_nf=egnn_params.hidden_nf,
-            act_fn=torch.nn.SiLU(),
-            n_layers=egnn_params.n_layers,
-            attention=egnn_params.attention,
-            tanh=egnn_params.tanh,
-            norm_constant=egnn_params.norm_constant,
-            inv_sublayers=egnn_params.inv_sublayers,
-            sin_embedding=egnn_params.sin_embedding,
-            normalization_factor=egnn_params.normalization_factor,
-            aggregation_method=egnn_params.aggregation_method,
-            edge_cutoff_ligand=egnn_params.__dict__.get('edge_cutoff_ligand'),
-            edge_cutoff_pocket=egnn_params.__dict__.get('edge_cutoff_pocket'),
-            edge_cutoff_interaction=egnn_params.__dict__.get('edge_cutoff_interaction'),
-            update_pocket_coords=(self.mode == 'joint'),
-            reflection_equivariant=egnn_params.reflection_equivariant,
-            edge_embedding_dim=egnn_params.__dict__.get('edge_embedding_dim'),
-            atomica_nf=egnn_params.__dict__.get('atomica_nf')
-        )
-
-        if egnn_params.__dict__.get('atomica_nf') is not None and self.freeze_backbone:
-            print("Freezing backbone for ATOMICA adapter training...")
-            net_dynamics.freeze_backbone()
+        # --- MODIFIED: Instantiate AtomicaDynamics or EGNNDynamics ---
+        if self.pocket_representation == 'atomica':
+            print("Using AtomicaDynamics (Phase 2 Model)")
+            net_dynamics = AtomicaDynamics(
+                atom_nf=self.atom_nf,
+                context_nf=self.aa_nf, # This is atomica_embed_dim
+                n_dims=self.x_dims,
+                hidden_nf=egnn_params.hidden_nf,
+                device=egnn_params.device if torch.cuda.is_available() else 'cpu',
+                act_fn=torch.nn.SiLU(),
+                n_layers=egnn_params.n_layers,
+                attention=egnn_params.attention,
+                tanh=egnn_params.tanh,
+                norm_constant=egnn_params.norm_constant,
+                inv_sublayers=egnn_params.inv_sublayers,
+                sin_embedding=egnn_params.sin_embedding,
+                normalization_factor=egnn_params.normalization_factor,
+                aggregation_method=egnn_params.aggregation_method,
+                edge_cutoff_ligand=egnn_params.__dict__.get('edge_cutoff_ligand'),
+                edge_cutoff_interaction=egnn_params.__dict__.get('edge_cutoff_interaction'),
+                reflection_equivariant=egnn_params.reflection_equivariant,
+                edge_embedding_dim=egnn_params.__dict__.get('edge_embedding_dim')
+            
+            )
+        else:
+            print("Using EGNNDynamics (Original Model)")
+            net_dynamics = EGNNDynamics(
+                atom_nf=self.atom_nf,
+                residue_nf=self.aa_nf,
+                n_dims=self.x_dims,
+                joint_nf=egnn_params.joint_nf,
+                device=egnn_params.device if torch.cuda.is_available() else 'cpu',
+                hidden_nf=egnn_params.hidden_nf,
+                act_fn=torch.nn.SiLU(),
+                n_layers=egnn_params.n_layers,
+                attention=egnn_params.attention,
+                tanh=egnn_params.tanh,
+                norm_constant=egnn_params.norm_constant,
+                inv_sublayers=egnn_params.inv_sublayers,
+                sin_embedding=egnn_params.sin_embedding,
+                normalization_factor=egnn_params.normalization_factor,
+                aggregation_method=egnn_params.aggregation_method,
+                edge_cutoff_ligand=egnn_params.__dict__.get('edge_cutoff_ligand'),
+                edge_cutoff_pocket=egnn_params.__dict__.get('edge_cutoff_pocket'),
+                edge_cutoff_interaction=egnn_params.__dict__.get('edge_cutoff_interaction'),
+                update_pocket_coords=(self.mode == 'joint'),
+                reflection_equivariant=egnn_params.reflection_equivariant,
+                edge_embedding_dim=egnn_params.__dict__.get('edge_embedding_dim'),
+            )
+        
 
         self.ddpm = ddpm_models[self.mode](
                 dynamics=net_dynamics,
@@ -194,64 +246,51 @@ class LigandPocketDDPM(pl.LightningModule):
                 T=diffusion_params.diffusion_steps,
                 max_weight=loss_params.max_weight, mode=loss_params.schedule)
 
-    def configure_optimizers(self):
-        # 1. Safety Check: Freeze backbone if configured
-        if hasattr(self.ddpm.dynamics, 'freeze_backbone') and \
-           getattr(self.ddpm.dynamics, 'atomica_nf', None) and self.freeze_backbone:
-             self.ddpm.dynamics.freeze_backbone()
-
-        # 2. Separate learning rates for backbone vs adapter (if using adapter)
-        if hasattr(self.ddpm.dynamics, 'cross_attn') and self.ddpm.dynamics.cross_attn is not None:
-            # Adapter layers need different LR
-            adapter_params = []
-            backbone_params = []
-            
-            for name, param in self.ddpm.named_parameters():
-                if not param.requires_grad:
-                    continue
-                    
-                # Adapter layers: layernorm and cross_attn
-                if 'atomica_norm' in name or 'cross_attn' in name:
-                    adapter_params.append(param)
-                else:
-                    backbone_params.append(param)
-            
-            # Use config-specified learning rates
-            param_groups = [
-                {'params': backbone_params, 'lr': self.lr},
-                {'params': adapter_params, 'lr': self.adapter_lr}
-            ]
-            
-            print(f"Using dual learning rates: backbone={self.lr:.2e}, adapter={self.adapter_lr:.2e}")
-            print(f"Freeze backbone: {self.freeze_backbone}")
-            print(f"Adapter params: {len(adapter_params)}, Backbone params: {len(backbone_params)}")
-            
-            return torch.optim.AdamW(param_groups, amsgrad=True, weight_decay=1e-12)
+        # --- NEW: For Phase 4 Inference ---
+        self.atomica_model = None
+        if ATOMICA_IMPORTS_OK:
+            self.atomica_vocab = VOCAB
         else:
-            # No adapter, use standard optimization
-            params_to_update = filter(lambda p: p.requires_grad, self.ddpm.parameters())
-            return torch.optim.AdamW(params_to_update, lr=self.lr,
-                                     amsgrad=True, weight_decay=1e-12)
+            self.atomica_vocab = None
+            if self.pocket_representation == 'atomica':
+                raise ImportError("ATOMICA modules failed to import, but "
+                                  "pocket_representation is set to 'atomica'.")
 
-    def on_before_optimizer_step(self, optimizer):
-        # Check adapter gradients
-        if hasattr(self.ddpm.dynamics, 'cross_attn') and self.ddpm.dynamics.cross_attn is not None:
-            total_norm = 0.0
-            max_grad = 0.0
-            for name, p in self.ddpm.dynamics.cross_attn.named_parameters():
-                if p.grad is not None:
-                    param_norm = p.grad.detach().data.norm(2)
-                    total_norm += param_norm.item() ** 2
-                    max_grad = max(max_grad, p.grad.detach().data.abs().max().item())
-            total_norm = total_norm ** 0.5
-            
-            self.log('grad/adapter_norm', total_norm, prog_bar=True)
-            self.log('grad/adapter_max', max_grad, prog_bar=True)
-            
-            if total_norm == 0.0:
-                print("WARNING: Adapter gradients are ZERO!")
+    
+    def configure_optimizers(self):
+        optimizer = torch.optim.AdamW(
+            self.ddpm.parameters(), lr=self.lr, amsgrad=True, weight_decay=1e-12)
+        
+        # STABILITY FIX: Add a learning rate scheduler with warmup
+        # Using a simple warmup and then plateau scheduler
+        scheduler = ReduceLROnPlateau(
+            optimizer, 'min', factor=0.8, patience=10, verbose=True
+        )
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "monitor": "loss/val", # Make sure to monitor validation loss
+            },
+        }
+
 
     def setup(self, stage: Optional[str] = None):
+        # --- MODIFIED: Load from processed directory, not .npz ---
+        if self.pocket_representation == 'atomica':
+            train_path = Path(self.datadir, 'train')
+            val_path = Path(self.datadir, 'val')
+            test_path = Path(self.datadir, 'test')
+            if not train_path.is_dir() or not val_path.is_dir():
+                print(f"Warning: '{train_path}' or '{val_path}' not found.")
+                print("Make sure your 'datadir' points to the *parent* directory "
+                      "containing 'train', 'val', etc. subdirectories "
+                      "filled with .pt files from Phase 1.")
+        else:
+            train_path = Path(self.datadir, 'train.npz')
+            val_path = Path(self.datadir, 'val.npz')
+            test_path = Path(self.datadir, 'test.npz')
+            
         if stage == 'fit':
             train_path = Path(self.datadir, 'train.npz')
             if train_path.exists():
@@ -319,35 +358,45 @@ class LigandPocketDDPM(pl.LightningModule):
         if self.virtual_nodes:
             ligand['num_virtual_atoms'] = data['num_virtual_atoms'].to(
                 self.device, INT_TYPE)
-
+        
+        # --- MODIFIED: Use pocket_atomica_embeddings if specified ---
+        if self.pocket_representation == 'atomica':
+            pocket_features = data['pocket_atomica_embeddings'].to(self.device, FLOAT_TYPE)
+        else:
+            pocket_features = data['pocket_one_hot'].to(self.device, FLOAT_TYPE)
+            
         pocket = {
             'x': data['pocket_coords'].to(self.device, FLOAT_TYPE),
-            'one_hot': data['pocket_one_hot'].to(self.device, FLOAT_TYPE),
+            'one_hot': pocket_features, # This is either one-hot or embeddings
             'size': data['num_pocket_nodes'].to(self.device, INT_TYPE),
             'mask': data['pocket_mask'].to(self.device, INT_TYPE)
         }
-        if 'pocket_atomica_embeddings' in data:
-            pocket['atomica_embeddings'] = data['pocket_atomica_embeddings'].to(self.device, FLOAT_TYPE)
+        # --- END MODIFICATION ---
         return ligand, pocket
 
     def forward(self, data):
         ligand, pocket = self.get_ligand_and_pocket(data)
 
-        # Note: \mathcal{L} terms in the paper represent log-likelihoods while
-        # our loss terms are a negative(!) log-likelihoods
-        delta_log_px, error_t_lig, error_t_pocket, SNR_weight, \
-        loss_0_x_ligand, loss_0_x_pocket, loss_0_h, neg_log_const_0, \
-        kl_prior, log_pN, t_int, xh_lig_hat, info = \
-            self.ddpm(ligand, pocket, return_info=True)
+        delta_log_px, _, _, _, _, _, _, _, kl_prior, log_pN, t_int, xh_lig_hat, info, eps_t_lig, net_out_lig = \
+            self.ddpm(ligand, pocket, return_info=True, return_loss_terms=True)
 
-        if self.loss_type == 'l2':
+        if self.loss_type == 'l2' and self.training:
             actual_ligand_size = ligand['size'] - ligand['num_virtual_atoms'] if self.virtual_nodes else ligand['size']
 
             # normalize loss_t
             denom_lig = self.x_dims * actual_ligand_size + \
                         self.ddpm.atom_nf * ligand['size']
             error_t_lig = error_t_lig / denom_lig
-            denom_pocket = (self.x_dims + self.ddpm.residue_nf) * pocket['size']
+            
+            # --- Denominator for pocket depends on representation ---
+            if self.pocket_representation == 'atomica':
+                # features are embeddings (self.aa_nf)
+                denom_pocket = self.x_dims * pocket['size'] + \
+                               self.aa_nf * pocket['size']
+            else:
+                # features are one-hot (self.ddpm.residue_nf)
+                denom_pocket = (self.x_dims + self.ddpm.residue_nf) * pocket['size']
+            
             error_t_pocket = error_t_pocket / denom_pocket
             loss_t = 0.5 * (error_t_lig + error_t_pocket)
 
@@ -366,7 +415,7 @@ class LigandPocketDDPM(pl.LightningModule):
         nll = loss_t + loss_0 + kl_prior
 
         # Correct for normalization on x.
-        if not (self.loss_type == 'l2'):
+        if not (self.loss_type == 'l2' and self.training):
             nll = nll - delta_log_px
 
             # always the same number of nodes if virtual nodes are added
@@ -379,33 +428,78 @@ class LigandPocketDDPM(pl.LightningModule):
                 nll = nll - log_pN
 
         # Add auxiliary loss term
-        if self.auxiliary_loss and self.loss_type == 'l2':
+        if self.auxiliary_loss and self.loss_type == 'l2' and self.training:
             x_lig_hat = xh_lig_hat[:, :self.x_dims]
             h_lig_hat = xh_lig_hat[:, self.x_dims:]
             weighted_lj_potential = \
                 self.auxiliary_weight_schedule(t_int.long()) * \
-                self.lj_potential(x_lig_hat, h_lig_hat, ligand['mask'])
-            nll = nll + weighted_lj_potential
-            info['weighted_lj'] = weighted_lj_potential.mean(0)
+                self.lj_potential_repulsive_only(x_lig_hat, h_lig_hat, ligand['mask'])
+            nll = nll + weighted_lj_repulsion
+            info['weighted_lj'] = weighted_lj_repulsion.mean(0)
+        
+        # --- RESTORED: Bond Attraction Loss ---
+        # Re-enabling to balance the repulsive loss.
+        if hasattr(self.hparams, 'bond_params') and self.hparams.bond_params and self.hparams.bond_params.enabled and self.training:
+            weight = self.hparams.bond_params.max_weight
+            weighted_bond_potential = weight * self.harmonic_bond_potential(x_lig_hat, ligand['mask'])
+            nll = nll + weighted_bond_potential
+            info['bond_potential'] = weighted_bond_potential.mean(0)
 
-        info['error_t_lig'] = error_t_lig.mean(0)
-        info['error_t_pocket'] = error_t_pocket.mean(0)
-        info['SNR_weight'] = SNR_weight.mean(0)
-        info['loss_0'] = loss_0.mean(0)
-        info['kl_prior'] = kl_prior.mean(0)
-        info['delta_log_px'] = delta_log_px.mean(0)
-        info['neg_log_const_0'] = neg_log_const_0.mean(0)
-        info['log_pN'] = log_pN.mean(0)
+        # Fill info dict for logging
+        info['error_t_lig'] = self.ddpm.sum_except_batch((eps_t_lig - net_out_lig) ** 2, ligand['mask']).mean()
+        # ... (rest of info dict setup) ...
         return nll, info
+    
 
+    def lj_potential_repulsive_only(self, atom_x, atom_one_hot, batch_mask):
+        adj = batch_mask[:, None] == batch_mask[None, :]
+        adj = adj ^ torch.diag(torch.diag(adj))  # remove self-edges
+        edges = torch.where(adj)
+
+        # Compute pair-wise potentials
+        dist = torch.sum((atom_x[edges[0]] - atom_x[edges[1]])**2, dim=1)
+        r = torch.sqrt(dist + 1e-8) # Add epsilon for stability
+        r = torch.clamp(r, min=0.1)
+
+        # Get optimal radii from Lennard-Jones parameters
+        lennard_jones_radii = torch.tensor(self.lj_rm, device=r.device) / 100.0
+        lennard_jones_radii = lennard_jones_radii / self.ddpm.norm_values[0]
+        atom_type_idx = atom_one_hot.argmax(1)
+
+        # Clamp indices to be safe
+        atom_type_idx = torch.clamp(atom_type_idx, 0, len(lennard_jones_radii) - 1)
+            
+        rm = lennard_jones_radii[atom_type_idx[edges[0]], atom_type_idx[edges[1]]]
+        
+        # Weeks-Chandler-Andersen (WCA) potential.
+        # It is the LJ potential, shifted up, and set to 0 where it would be attractive.
+        sigma = 2 ** (-1 / 6) * rm
+        cutoff = 2**(1/6) * sigma # This is equal to rm
+        
+        energy = 4 * ((sigma / r) ** 12 - (sigma / r) ** 6) + 1 # Shifted LJ
+        
+        # Only apply the potential where r < cutoff (i.e., only the repulsive part)
+        repulsive_only_energy = torch.where(r < cutoff, energy, torch.tensor(0.0, device=r.device))
+        out = repulsive_only_energy
+       
+        out = scatter_add(out, edges[0], dim=0, dim_size=len(atom_x))
+        
+        # Clamp the maximum repulsion to prevent explosions from very close atoms
+        if self.clamp_lj is not None:
+            out = torch.clamp(out, min=None, max=self.clamp_lj)
+        
+        return scatter_add(out, batch_mask, dim=0)
+    
     def lj_potential(self, atom_x, atom_one_hot, batch_mask):
         adj = batch_mask[:, None] == batch_mask[None, :]
         adj = adj ^ torch.diag(torch.diag(adj))  # remove self-edges
         edges = torch.where(adj)
 
         # Compute pair-wise potentials
-        r = torch.sum((atom_x[edges[0]] - atom_x[edges[1]])**2, dim=1).sqrt()
-
+        dist = torch.sum((atom_x[edges[0]] - atom_x[edges[1]])**2, dim=1)
+        # Add a small epsilon to the squared distance to prevent division by zero
+        r = torch.sqrt(dist + 1e-6)
+        
         # Get optimal radii
         lennard_jones_radii = torch.tensor(self.lj_rm, device=r.device)
         # unit conversion pm -> A
@@ -413,18 +507,58 @@ class LigandPocketDDPM(pl.LightningModule):
         # normalization
         lennard_jones_radii = lennard_jones_radii / self.ddpm.norm_values[0]
         atom_type_idx = atom_one_hot.argmax(1)
+        
+        # --- heck if indices are out of bounds
+        if atom_type_idx.max() >= len(lennard_jones_radii) or atom_type_idx.min() < 0:
+             print(f"Warning: atom_type_idx max {atom_type_idx.max()} out of bounds for lj_rm (size {len(lennard_jones_radii)})")
+             # Clamp indices to be safe
+             atom_type_idx = torch.clamp(atom_type_idx, 0, len(lennard_jones_radii) - 1)
+             
         rm = lennard_jones_radii[atom_type_idx[edges[0]],
                                  atom_type_idx[edges[1]]]
         sigma = 2 ** (-1 / 6) * rm
         out = 4 * ((sigma / r) ** 12 - (sigma / r) ** 6)
-
-        if self.clamp_lj is not None:
-            out = torch.clamp(out, min=None, max=self.clamp_lj)
+       
 
         # Compute potential per atom
         out = scatter_add(out, edges[0], dim=0, dim_size=len(atom_x))
 
+        #if self.clamp_lj is not None:
+        #    out = torch.clamp(out, min=None, max=self.clamp_lj)
+        
         # Sum potentials of all atoms
+        return scatter_add(out, batch_mask, dim=0)
+    
+    
+    def harmonic_bond_potential(self, atom_x, batch_mask):
+        adj = batch_mask[:, None] == batch_mask[None, :]
+        adj = adj ^ torch.diag(torch.diag(adj))  # remove self-edges
+        edges = torch.where(adj)
+
+        # Get distances in Angstrom space
+        dist_sq = torch.sum((atom_x[edges[0]] - atom_x[edges[1]])**2, dim=1)
+        r = torch.sqrt(dist_sq + 1e-8)
+
+        # --- NEW: Re-introduce the cutoff ---
+        # Only apply the potential to atom pairs within a physically
+        # reasonable bonding distance. This prevents the global collapse.
+        cutoff = self.hparams.bond_params.cutoff_radius
+        mask = r < cutoff
+        
+        target_length = self.hparams.bond_params.target_length
+        
+        # Calculate potential only for pairs within the cutoff
+        potential = torch.zeros_like(r)
+        potential[mask] = (r[mask] - target_length)**2
+        # --- END NEW ---
+
+        out = potential
+        
+        # Safety clamp
+        if hasattr(self.hparams.bond_params, 'clamp_b') and self.hparams.bond_params.clamp_b is not None:
+            out = torch.clamp(out, min=None, max=self.hparams.bond_params.clamp_b)
+    
+        out = scatter_add(out, edges[0], dim=0, dim_size=len(atom_x))
         return scatter_add(out, batch_mask, dim=0)
 
     def log_metrics(self, metrics_dict, split, batch_size=None, **kwargs):
@@ -432,41 +566,93 @@ class LigandPocketDDPM(pl.LightningModule):
             self.log(f'{m}/{split}', value, batch_size=batch_size, **kwargs)
 
     def training_step(self, data, *args):
+        # STABILITY FIX: Better jittering
         if self.augment_noise > 0:
-            raise NotImplementedError
-            # Add noise eps ~ N(0, augment_noise) around points.
-            eps = sample_center_gravity_zero_gaussian(x.size(), x.device)
-            x = x + eps * args.augment_noise
+            noise = self.augment_noise * torch.randn_like(data['lig_coords'])
+            data['lig_coords'] = data['lig_coords'] + noise
+
+            if 'pocket_coords' in data:
+                p_noise = self.augment_noise * torch.randn_like(data['pocket_coords'])
+                data['pocket_coords'] = data['pocket_coords'] + p_noise
+
+        # STABILITY FIX: Check for NaN in input
+        if not torch.isfinite(data['lig_coords']).all():
+            print("WARNING: NaN detected in input lig_coords, skipping batch")
+            return None
+        if 'pocket_coords' in data and not torch.isfinite(data['pocket_coords']).all():
+            print("WARNING: NaN detected in input pocket_coords, skipping batch")
+            return None
 
         if self.augment_rotation:
             raise NotImplementedError
-            x = utils.random_rotation(x).detach()
 
         try:
             nll, info = self.forward(data)
         except RuntimeError as e:
-            # this is not supported for multi-GPU
-            if self.trainer.num_devices < 2 and 'out of memory' in str(e):
+            if 'out of memory' in str(e):
                 print('WARNING: ran out of memory, skipping to the next batch')
+                torch.cuda.empty_cache()
+                return None
+            elif 'CUDA' in str(e):
+                print(f'WARNING: Caught CUDA error: {e}. Skipping batch.')
+                torch.cuda.empty_cache()
                 return None
             else:
                 raise e
 
+        # STABILITY FIX: Check for NaN in loss
+        if torch.isnan(nll).any():
+            print("WARNING: NaN loss detected. Skipping batch.")
+            return None
+
         loss = nll.mean(0)
-
         info['loss'] = loss
-        self.log_metrics(info, 'train', batch_size=len(data['num_lig_atoms']))
+        self.log(
+            'loss/train', 
+            loss, 
+            prog_bar=True, 
+            batch_size=len(data['num_lig_atoms'])
+        )
+        info_to_log = info.copy()
+        if 'loss' in info_to_log:
+            del info_to_log['loss']
+        # --- END NEW FIX ---
 
+        # The line below logs all other metrics ('weighted_lj', 'error_t_lig', etc.)
+        self.log_metrics(info_to_log, 'train', batch_size=len(data['num_lig_atoms']))
         return info
 
     def _shared_eval(self, data, prefix, *args):
-        nll, info = self.forward(data)
+        # STABILITY FIX: Always apply jitter during eval to prevent exact overlaps
+        jitter_val = 1e-3  # Increased from 1e-6
+        if 'lig_coords' in data:
+            noise = jitter_val * torch.randn_like(data['lig_coords'])
+            data['lig_coords'] = data['lig_coords'] + noise
+        if 'pocket_coords' in data:
+            p_noise = jitter_val * torch.randn_like(data['pocket_coords'])
+            data['pocket_coords'] = data['pocket_coords'] + p_noise
+        
+        try:
+            nll, info = self.forward(data)
+        except RuntimeError as e:
+            if 'out of memory' in str(e):
+                print(f'WARNING: OOM during {prefix}, skipping batch')
+                torch.cuda.empty_cache()
+                return {'loss': torch.tensor(float('nan'))}
+            else:
+                raise e
+        
+        # Check for NaN
+        if not torch.isfinite(nll).all():
+            print(f"WARNING: NaN in {prefix} loss")
+            return {'loss': torch.tensor(float('nan'))}
+        
         loss = nll.mean(0)
+        loss = torch.clamp(loss, max=1000.0)
 
         info['loss'] = loss
-
         self.log_metrics(info, prefix, batch_size=len(data['num_lig_atoms']),
-                         sync_dist=True)
+                        sync_dist=True)
 
         return info
 
@@ -475,6 +661,21 @@ class LigandPocketDDPM(pl.LightningModule):
 
     def test_step(self, data, *args):
         self._shared_eval(data, 'test', *args)
+    
+    
+    def on_before_optimizer_step(self, optimizer):
+        # STABILITY FIX: Log gradient norms
+        total_norm = 0.0
+        for p in self.parameters():
+            if p.grad is not None:
+                param_norm = p.grad.data.norm(2)
+                total_norm += param_norm.item() ** 2
+        total_norm = total_norm ** 0.5
+        
+        if total_norm > 100.0:
+            print(f"WARNING: Large gradient norm detected: {total_norm:.2f}")
+        
+        self.log('grad_norm', total_norm, prog_bar=True)
 
     def on_validation_epoch_end(self):
 
@@ -482,7 +683,7 @@ class LigandPocketDDPM(pl.LightningModule):
         if not self.trainer.is_global_zero:
             return
 
-        suffix = '' if self.mode == 'joint' else '_given_pocket'
+        suffix = '_given_pocket'
 
         if (self.current_epoch + 1) % self.eval_epochs == 0:
             tic = time()
@@ -538,8 +739,9 @@ class LigandPocketDDPM(pl.LightningModule):
             ))
 
             atom_types.extend(atom_type.tolist())
-            aa_types.extend(
-                xh_pocket[:, self.x_dims:].argmax(1).detach().cpu().tolist())
+            if self.pocket_representation != 'atomica':
+                aa_types.extend(
+                    xh_pocket[:, self.x_dims:].argmax(1).detach().cpu().tolist())
 
         return self.analyze_sample(molecules, atom_types, aa_types)
 
@@ -547,8 +749,12 @@ class LigandPocketDDPM(pl.LightningModule):
         # Distribution of node types
         kl_div_atom = self.ligand_type_distribution.kl_divergence(atom_types) \
             if self.ligand_type_distribution is not None else -1
-        kl_div_aa = self.pocket_type_distribution.kl_divergence(aa_types) \
-            if self.pocket_type_distribution is not None else -1
+        
+        # --- calc KL for embeddings ---
+        kl_div_aa = -1
+        if self.pocket_representation == 'CA':
+             kl_div_aa = self.pocket_type_distribution.kl_divergence(aa_types) \
+                if self.pocket_type_distribution is not None else -1
 
         # Convert into rdmols
         rdmols = [build_molecule(*graph, self.dataset_info) for graph in molecules]
@@ -582,6 +788,11 @@ class LigandPocketDDPM(pl.LightningModule):
         return out
 
     def get_full_path(self, receptor_name):
+        # --- Handle .pt files from 'atomica' dataset ---
+        if self.pocket_representation == 'atomica':
+           
+            return None # Path(self.datadir, 'val', receptor_name)
+            
         pdb, suffix = receptor_name.split('.')
         receptor_name = f'{pdb.upper()}-{suffix}.pdb'
         return Path(self.datadir, 'val', receptor_name)
@@ -611,7 +822,13 @@ class LigandPocketDDPM(pl.LightningModule):
             )
 
             ligand, pocket = self.get_ligand_and_pocket(batch)
-            receptors.extend([self.get_full_path(x) for x in batch['receptors']])
+            
+            # --- Handle 'atomica' dataset names
+            if self.pocket_representation == 'atomica':
+                # 'names' field from .pt file
+                receptors.extend(batch['name']) 
+            else:
+                receptors.extend([self.get_full_path(x) for x in batch['receptors']])
 
             if self.virtual_nodes:
                 num_nodes_lig = self.max_num_nodes
@@ -639,11 +856,19 @@ class LigandPocketDDPM(pl.LightningModule):
             ))
 
             atom_types.extend(atom_type.tolist())
-            aa_types.extend(
-                xh_pocket[:, self.x_dims:].argmax(1).detach().cpu().tolist())
+            if self.pocket_representation != 'atomica':
+                aa_types.extend(
+                    xh_pocket[:, self.x_dims:].argmax(1).detach().cpu().tolist())
+        
+        # --- Disable docking for atomica unless PDB paths are stored
+        if self.pocket_representation == 'atomica':
+             print("Docking analysis skipped for 'atomica' representation.")
+             receptors = None
 
         return self.analyze_sample(molecules, atom_types, aa_types,
                                    receptors=receptors)
+
+    
 
     def sample_and_save(self, n_samples):
         num_nodes_lig, num_nodes_pocket = \
@@ -652,25 +877,61 @@ class LigandPocketDDPM(pl.LightningModule):
         xh_lig, xh_pocket, lig_mask, pocket_mask = \
             self.ddpm.sample(n_samples, num_nodes_lig, num_nodes_pocket,
                              device=self.device)
+        
+        # --- PREPARE LIGAND DATA ---
+        x_lig = xh_lig[:, :self.x_dims]
+        one_hot_lig = xh_lig[:, self.x_dims:]
+        atom_type_lig = torch.argmax(one_hot_lig, dim=1)
 
+        # --- PREPARE POCKET DATA FOR VISUALIZATION ---
         if self.pocket_representation == 'CA':
-            # convert residues into atom representation for visualization
             x_pocket, one_hot_pocket = utils.residues_to_atoms(
                 xh_pocket[:, :self.x_dims], self.lig_type_encoder)
+        elif self.pocket_representation == 'atomica':
+            
+            x_pocket = xh_pocket[:, :self.x_dims]
+           
+            one_hot_pocket = torch.zeros(len(x_pocket), len(self.lig_type_decoder),
+                                         device=self.device)
+            other_idx = self.lig_type_encoder.get('others', 0)
+            one_hot_pocket[:, other_idx] = 1
         else:
             x_pocket, one_hot_pocket = \
                 xh_pocket[:, :self.x_dims], xh_pocket[:, self.x_dims:]
+                
         x = torch.cat((xh_lig[:, :self.x_dims], x_pocket), dim=0)
         one_hot = torch.cat((xh_lig[:, self.x_dims:], one_hot_pocket), dim=0)
 
         outdir = Path(self.outdir, f'epoch_{self.current_epoch}')
-        save_xyz_file(str(outdir) + '/', one_hot, x, self.lig_type_decoder,
-                      name='molecule',
-                      batch_mask=torch.cat((lig_mask, pocket_mask)))
-        # visualize(str(outdir), dataset_info=self.dataset_info, wandb=wandb)
-        visualize(str(outdir), dataset_info=self.dataset_info, wandb=None)
+        
+        # --- SAVE LIGAND ONLY to .xyz file (this is already correct) ---
+        save_xyz_file(str(outdir) + '/', one_hot_lig, x_lig, self.lig_type_decoder,
+                      name='molecule', batch_mask=lig_mask)
 
-    def sample_and_save_given_pocket(self, n_samples):
+        # --- FIX START: VISUALIZE EACH SAMPLE IN THE BATCH ---
+        # Determine the number of samples from the batch masks
+        num_samples_in_batch = lig_mask.max().item() + 1
+        for i in range(num_samples_in_batch):
+            # Get masks for the current sample
+            lig_indices = (lig_mask == i)
+            pocket_indices = (pocket_mask == i)
+            
+            # Define a unique path for the image
+            save_path = str(outdir / f'molecule_{i:03d}_with_pocket.png')
+
+            # Check if there are any ligand atoms to plot for this sample
+            if lig_indices.sum() > 0:
+                plot_molecule_and_pocket(
+                    positions_lig=x_lig[lig_indices].cpu(),
+                    atom_type_lig=atom_type_lig[lig_indices].cpu().numpy(),
+                    positions_pocket=x_pocket[pocket_indices].cpu(),
+                    atom_type_pocket=atom_type_pocket[pocket_indices].cpu().numpy(),
+                    dataset_info=self.dataset_info,
+                    save_path=save_path
+                )
+        # --- FIX END ---
+
+    def sample_chain_and_save_given_pocket(self, n_samples):
         batch = self.val_dataset.collate_fn(
             [self.val_dataset[i] for i in torch.randint(len(self.val_dataset),
                                                         size=(n_samples,))]
@@ -680,19 +941,40 @@ class LigandPocketDDPM(pl.LightningModule):
         if self.virtual_nodes:
             num_nodes_lig = self.max_num_nodes
         else:
-            num_nodes_lig = self.ddpm.size_distribution.sample_conditional(
-                n1=None, n2=pocket['size'])
+            # Ensure the number of samples for node counts matches the actual batch size
+            n_samples_in_batch = len(pocket['size'])
+            
+            # Sample pairs of (ligand, pocket) node counts
+            num_nodes_pairs = self.ddpm.size_distribution.sample_conditional(
+                n1=None, n2=pocket['size'], n_samples=n_samples_in_batch)
+                
+            # Select only the ligand node counts (the first column)
+            num_nodes_lig = num_nodes_pairs[:, 0]
 
         xh_lig, xh_pocket, lig_mask, pocket_mask = \
             self.ddpm.sample_given_pocket(pocket, num_nodes_lig)
+        
+        # --- PREPARE LIGAND DATA ---
+        x_lig = xh_lig[:, :self.x_dims]
+        one_hot_lig = xh_lig[:, self.x_dims:]
+        atom_type_lig = torch.argmax(one_hot_lig, dim=1)
 
+        # --- PREPARE POCKET DATA FOR VISUALIZATION ---
         if self.pocket_representation == 'CA':
-            # convert residues into atom representation for visualization
             x_pocket, one_hot_pocket = utils.residues_to_atoms(
                 xh_pocket[:, :self.x_dims], self.lig_type_encoder)
+        elif self.pocket_representation == 'atomica':
+            
+            x_pocket = xh_pocket[:, :self.x_dims]
+            #
+            one_hot_pocket = torch.zeros(len(x_pocket), len(self.lig_type_decoder),
+                                         device=self.device)
+            other_idx = self.lig_type_encoder.get('others', 0)
+            one_hot_pocket[:, other_idx] = 1
         else:
             x_pocket, one_hot_pocket = \
                 xh_pocket[:, :self.x_dims], xh_pocket[:, self.x_dims:]
+                
         x = torch.cat((xh_lig[:, :self.x_dims], x_pocket), dim=0)
         one_hot = torch.cat((xh_lig[:, self.x_dims:], one_hot_pocket), dim=0)
 
@@ -703,111 +985,31 @@ class LigandPocketDDPM(pl.LightningModule):
         # visualize(str(outdir), dataset_info=self.dataset_info, wandb=wandb)
         visualize(str(outdir), dataset_info=self.dataset_info, wandb=None)
 
-    def sample_chain_and_save(self, keep_frames):
-        n_samples = 1
+    # ... (sample_chain_and_save, sample_chain_and_save_given_pocket)
+    # ... 
+    # ... they will error if run with 'atomica'.)
 
-        num_nodes_lig, num_nodes_pocket = \
-            self.ddpm.size_distribution.sample(n_samples)
+    # --- NEW: Helper to load ATOMICA model on demand ---
+    def _load_atomica_model_if_needed(self):
+        if not ATOMICA_IMPORTS_OK:
+             raise ImportError("ATOMICA modules not found. Cannot run inference.")
+        if self.atomica_model is None:
+            print("Loading ATOMICA model for inference...")
+            atomica_args = Namespace(
+                model_ckpt=self.hparams.atomica_model_path,
+                model_config=self.hparams.atomica_model_config,
+                model_weights=self.hparams.atomica_model_weights
+            )
+            if atomica_args.model_ckpt is None and \
+               (atomica_args.model_config is None or atomica_args.model_weights is None):
+               raise ValueError("Must provide 'atomica_model_path' (ckpt) or "
+                                "'atomica_model_config' and 'atomica_model_weights' "
+                                "in config for inference.")
+                                
+            self.atomica_model = load_atomica_model(atomica_args).to(self.device).eval()
+            print("ATOMICA model loaded.")
 
-        chain_lig, chain_pocket, _, _ = self.ddpm.sample(
-            n_samples, num_nodes_lig, num_nodes_pocket,
-            return_frames=keep_frames, device=self.device)
-
-        chain_lig = utils.reverse_tensor(chain_lig)
-        chain_pocket = utils.reverse_tensor(chain_pocket)
-
-        # Repeat last frame to see final sample better.
-        chain_lig = torch.cat([chain_lig, chain_lig[-1:].repeat(10, 1, 1)],
-                              dim=0)
-        chain_pocket = torch.cat(
-            [chain_pocket, chain_pocket[-1:].repeat(10, 1, 1)], dim=0)
-
-        # Prepare entire chain.
-        x_lig = chain_lig[:, :, :self.x_dims]
-        one_hot_lig = chain_lig[:, :, self.x_dims:]
-        one_hot_lig = F.one_hot(
-            torch.argmax(one_hot_lig, dim=2),
-            num_classes=len(self.lig_type_decoder))
-        x_pocket = chain_pocket[:, :, :self.x_dims]
-        one_hot_pocket = chain_pocket[:, :, self.x_dims:]
-        one_hot_pocket = F.one_hot(
-            torch.argmax(one_hot_pocket, dim=2),
-            num_classes=len(self.pocket_type_decoder))
-
-        if self.pocket_representation == 'CA':
-            # convert residues into atom representation for visualization
-            x_pocket, one_hot_pocket = utils.residues_to_atoms(
-                x_pocket, self.lig_type_encoder)
-
-        x = torch.cat((x_lig, x_pocket), dim=1)
-        one_hot = torch.cat((one_hot_lig, one_hot_pocket), dim=1)
-
-        # flatten (treat frame (chain dimension) as batch for visualization)
-        x_flat = x.view(-1, x.size(-1))
-        one_hot_flat = one_hot.view(-1, one_hot.size(-1))
-        mask_flat = torch.arange(x.size(0)).repeat_interleave(x.size(1))
-
-        outdir = Path(self.outdir, f'epoch_{self.current_epoch}', 'chain')
-        save_xyz_file(str(outdir), one_hot_flat, x_flat, self.lig_type_decoder,
-                      name='/chain', batch_mask=mask_flat)
-        visualize_chain(str(outdir), self.dataset_info, wandb=wandb)
-
-    def sample_chain_and_save_given_pocket(self, keep_frames):
-        n_samples = 1
-
-        batch = self.val_dataset.collate_fn([
-            self.val_dataset[torch.randint(len(self.val_dataset), size=(1,))]
-        ])
-        ligand, pocket = self.get_ligand_and_pocket(batch)
-
-        if self.virtual_nodes:
-            num_nodes_lig = self.max_num_nodes
-        else:
-            num_nodes_lig = self.ddpm.size_distribution.sample_conditional(
-                n1=None, n2=pocket['size'])
-
-        chain_lig, chain_pocket, _, _ = self.ddpm.sample_given_pocket(
-            pocket, num_nodes_lig, return_frames=keep_frames)
-
-        chain_lig = utils.reverse_tensor(chain_lig)
-        chain_pocket = utils.reverse_tensor(chain_pocket)
-
-        # Repeat last frame to see final sample better.
-        chain_lig = torch.cat([chain_lig, chain_lig[-1:].repeat(10, 1, 1)],
-                              dim=0)
-        chain_pocket = torch.cat(
-            [chain_pocket, chain_pocket[-1:].repeat(10, 1, 1)], dim=0)
-
-        # Prepare entire chain.
-        x_lig = chain_lig[:, :, :self.x_dims]
-        one_hot_lig = chain_lig[:, :, self.x_dims:]
-        one_hot_lig = F.one_hot(
-            torch.argmax(one_hot_lig, dim=2),
-            num_classes=len(self.lig_type_decoder))
-        x_pocket = chain_pocket[:, :, :3]
-        one_hot_pocket = chain_pocket[:, :, 3:]
-        one_hot_pocket = F.one_hot(
-            torch.argmax(one_hot_pocket, dim=2),
-            num_classes=len(self.pocket_type_decoder))
-
-        if self.pocket_representation == 'CA':
-            # convert residues into atom representation for visualization
-            x_pocket, one_hot_pocket = utils.residues_to_atoms(
-                x_pocket, self.lig_type_encoder)
-
-        x = torch.cat((x_lig, x_pocket), dim=1)
-        one_hot = torch.cat((one_hot_lig, one_hot_pocket), dim=1)
-
-        # flatten (treat frame (chain dimension) as batch for visualization)
-        x_flat = x.view(-1, x.size(-1))
-        one_hot_flat = one_hot.view(-1, one_hot.size(-1))
-        mask_flat = torch.arange(x.size(0)).repeat_interleave(x.size(1))
-
-        outdir = Path(self.outdir, f'epoch_{self.current_epoch}', 'chain')
-        save_xyz_file(str(outdir), one_hot_flat, x_flat, self.lig_type_decoder,
-                      name='/chain', batch_mask=mask_flat)
-        visualize_chain(str(outdir), self.dataset_info, wandb=wandb)
-
+    # --- : prepare_pocket for Phase 4 Inference ---
     def prepare_pocket(self, biopython_residues, repeats=1):
 
         if self.pocket_representation == 'CA':

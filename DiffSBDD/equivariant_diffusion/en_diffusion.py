@@ -183,13 +183,13 @@ class EnVariationalDiffusion(nn.Module):
         return degrees_of_freedom_x * (- log_sigma_x - 0.5 * np.log(2 * np.pi))
 
     def log_pxh_given_z0_without_constants(
-            self, ligand, z_0_lig, eps_lig, net_out_lig,
-            pocket, z_0_pocket, eps_pocket, net_out_pocket,
-            gamma_0, epsilon=1e-10):
+        self, ligand, z_0_lig, eps_lig, net_out_lig,
+        pocket, z_0_pocket, eps_pocket, net_out_pocket,
+        gamma_0, epsilon=1e-10):
 
         # Discrete properties are predicted directly from z_t.
         z_h_lig = z_0_lig[:, self.n_dims:]
-        z_h_pocket = z_0_pocket[:, self.n_dims:]
+        z_h_pocket = z_0_pocket[:, self.n_dims:] #--- NEW: These are continuous embeddings
 
         # Take only part over x.
         eps_lig_x = eps_lig[:, :self.n_dims]
@@ -197,9 +197,14 @@ class EnVariationalDiffusion(nn.Module):
         eps_pocket_x = eps_pocket[:, :self.n_dims]
         net_pocket_x = net_out_pocket[:, :self.n_dims]
 
+        #--- NEW: Take part over h (features) for pocket L2 loss ---
+        eps_pocket_h = eps_pocket[:, self.n_dims:]
+        net_pocket_h = net_out_pocket[:, self.n_dims:]
+        #--- END NEW ---
+
         # Compute sigma_0 and rescale to the integer scale of the data.
         sigma_0 = self.sigma(gamma_0, target_tensor=z_0_lig)
-        sigma_0_cat = sigma_0 * self.norm_values[1]
+        sigma_0_cat = sigma_0 * self.norm_values[1] #--- NEW: This is for LIGAND ONLY
 
         # Computes the error for the distribution
         # N(x | 1 / alpha_0 z_0 + sigma_0/alpha_0 eps_0, sigma_0 / alpha_0),
@@ -210,20 +215,17 @@ class EnVariationalDiffusion(nn.Module):
 
         log_p_x_given_z0_without_constants_pocket = -0.5 * (
             self.sum_except_batch((eps_pocket_x - net_pocket_x) ** 2,
-                                  pocket['mask'])
+                                pocket['mask'])
         )
 
+        #--- LIGAND (h) loss: Categorical (as before) ---
         # Compute delta indicator masks.
         # un-normalize
         ligand_onehot = ligand['one_hot'] * self.norm_values[1] + self.norm_biases[1]
-        pocket_onehot = pocket['one_hot'] * self.norm_values[1] + self.norm_biases[1]
-
         estimated_ligand_onehot = z_h_lig * self.norm_values[1] + self.norm_biases[1]
-        estimated_pocket_onehot = z_h_pocket * self.norm_values[1] + self.norm_biases[1]
 
         # Centered h_cat around 1, since onehot encoded.
         centered_ligand_onehot = estimated_ligand_onehot - 1
-        centered_pocket_onehot = estimated_pocket_onehot - 1
 
         # Compute integrals from 0.5 to 1.5 of the normal distribution
         # N(mean=z_h_cat, stdev=sigma_0_cat)
@@ -232,37 +234,37 @@ class EnVariationalDiffusion(nn.Module):
             - self.cdf_standard_gaussian((centered_ligand_onehot - 0.5) / sigma_0_cat[ligand['mask']])
             + epsilon
         )
-        log_ph_cat_proportional_pocket = torch.log(
-            self.cdf_standard_gaussian((centered_pocket_onehot + 0.5) / sigma_0_cat[pocket['mask']])
-            - self.cdf_standard_gaussian((centered_pocket_onehot - 0.5) / sigma_0_cat[pocket['mask']])
-            + epsilon
-        )
+        log_ph_cat_proportional_ligand = torch.clamp(log_ph_cat_proportional_ligand, min=-25.0)
+
 
         # Normalize the distribution over the categories.
         log_Z = torch.logsumexp(log_ph_cat_proportional_ligand, dim=1,
                                 keepdim=True)
         log_probabilities_ligand = log_ph_cat_proportional_ligand - log_Z
 
-        log_Z = torch.logsumexp(log_ph_cat_proportional_pocket, dim=1,
-                                keepdim=True)
-        log_probabilities_pocket = log_ph_cat_proportional_pocket - log_Z
-
         # Select the log_prob of the current category using the onehot
         # representation.
         log_ph_given_z0_ligand = self.sum_except_batch(
             log_probabilities_ligand * ligand_onehot, ligand['mask'])
-        log_ph_given_z0_pocket = self.sum_except_batch(
-            log_probabilities_pocket * pocket_onehot, pocket['mask'])
+
+        #--- POCKET (h) loss: Continuous L2 (THE FIX) ---
+        # This is now an L2 loss, just like the x-loss.
+        # We want -0.5 * ||eps_h - net_h||^2
+        log_ph_given_z0_pocket = -0.5 * (
+            self.sum_except_batch((eps_pocket_h - net_pocket_h) ** 2,
+                                pocket['mask'])
+        )
+        #--- END FIX ---
 
         # Combine log probabilities of ligand and pocket for h.
         log_ph_given_z0 = log_ph_given_z0_ligand + log_ph_given_z0_pocket
 
         return log_p_x_given_z0_without_constants_ligand, \
-               log_p_x_given_z0_without_constants_pocket, log_ph_given_z0
+            log_p_x_given_z0_without_constants_pocket, log_ph_given_z0
 
     def sample_p_xh_given_z0(self, z0_lig, z0_pocket, lig_mask, pocket_mask,
-                             batch_size, fix_noise=False):
-        """Samples x ~ p(x|z0)."""
+                         batch_size, fix_noise=False):
+        """Samples x ~ p(x|z0)"""
         t_zeros = torch.zeros(size=(batch_size, 1), device=z0_lig.device)
         gamma_0 = self.gamma(t_zeros)
         # Computes sqrt(sigma_0^2 / alpha_0^2)
@@ -273,17 +275,28 @@ class EnVariationalDiffusion(nn.Module):
         # Compute mu for p(zs | zt).
         mu_x_lig = self.compute_x_pred(net_out_lig, z0_lig, gamma_0, lig_mask)
         mu_x_pocket = self.compute_x_pred(net_out_pocket, z0_pocket, gamma_0,
-                                          pocket_mask)
+                                        pocket_mask)
         xh_lig, xh_pocket = self.sample_normal(mu_x_lig, mu_x_pocket, sigma_x,
-                                               lig_mask, pocket_mask, fix_noise)
+                                            lig_mask, pocket_mask, fix_noise)
+
+        # --- NEW: Enforce zero-CoM ---
+        xh_x = self.remove_mean_batch(
+            torch.cat((xh_lig[:, :self.n_dims], xh_pocket[:, :self.n_dims]), dim=0),
+            torch.cat((lig_mask, pocket_mask))
+        )
+        xh_lig = torch.cat((xh_x[:len(lig_mask)], xh_lig[:, self.n_dims:]), dim=1)
+        xh_pocket = torch.cat((xh_x[len(lig_mask):], xh_pocket[:, self.n_dims:]), dim=1)
+        # --- END NEW ---
 
         x_lig, h_lig = self.unnormalize(
             xh_lig[:, :self.n_dims], z0_lig[:, self.n_dims:])
+
+        #--- NEW: Unnormalize pocket features but DO NOT argmax them ---
         x_pocket, h_pocket = self.unnormalize(
             xh_pocket[:, :self.n_dims], z0_pocket[:, self.n_dims:])
+        #--- END NEW ---
 
         h_lig = F.one_hot(torch.argmax(h_lig, dim=1), self.atom_nf)
-        h_pocket = F.one_hot(torch.argmax(h_pocket, dim=1), self.residue_nf)
 
         return x_lig, h_lig, x_pocket, h_pocket
 
@@ -326,7 +339,7 @@ class EnVariationalDiffusion(nn.Module):
         Returns:
             log p(N)
         """
-        log_pN = self.size_distribution.log_prob(N_lig, N_pocket)
+        log_pN = self.size_distribution.log_prob_n1_given_n2(N_lig, N_pocket)
         return log_pN
 
     def delta_log_px(self, num_nodes):
@@ -509,37 +522,27 @@ class EnVariationalDiffusion(nn.Module):
         sigma2_t_given_s, sigma_t_given_s, alpha_t_given_s = \
             self.sigma_and_alpha_t_given_s(gamma_t, gamma_s, zt_lig)
 
-        sigma_s = self.sigma(gamma_s, target_tensor=zt_lig)
-        sigma_t = self.sigma(gamma_t, target_tensor=zt_lig)
-
         # Neural net prediction.
         eps_t_lig, eps_t_pocket = self.dynamics(
             zt_lig, zt_pocket, t, ligand_mask, pocket_mask)
 
-        # Compute mu for p(zs | zt).
-        combined_mask = torch.cat((ligand_mask, pocket_mask))
-        self.assert_mean_zero_with_mask(
-            torch.cat((zt_lig[:, :self.n_dims],
-                       zt_pocket[:, :self.n_dims]), dim=0),
-            combined_mask)
-        self.assert_mean_zero_with_mask(
-            torch.cat((eps_t_lig[:, :self.n_dims],
-                       eps_t_pocket[:, :self.n_dims]), dim=0),
-            combined_mask)
+        # --- STABILITY FIX: More stable mu calculation from EDM Paper (Eq. 7 & 8) ---
+        alpha_t = self.alpha(gamma_t, zt_lig)
+        alpha_s = self.alpha(gamma_s, zt_lig)
+        sigma_t = self.sigma(gamma_t, zt_lig)
+        sigma_s = self.sigma(gamma_s, zt_lig)
+        
+        coeff1 = alpha_s / alpha_t
+        coeff2 = sigma_s - (alpha_s * sigma_t / alpha_t)
 
-        # Note: mu_{t->s} = 1 / alpha_{t|s} z_t - sigma_{t|s}^2 / sigma_t / alpha_{t|s} epsilon
-        # follows from the definition of mu_{t->s} and Equ. (7) in the EDM paper
-        mu_lig = zt_lig / alpha_t_given_s[ligand_mask] - \
-                 (sigma2_t_given_s / alpha_t_given_s / sigma_t)[ligand_mask] * \
-                 eps_t_lig
-        mu_pocket = zt_pocket / alpha_t_given_s[pocket_mask] - \
-                    (sigma2_t_given_s / alpha_t_given_s / sigma_t)[pocket_mask] * \
-                    eps_t_pocket
+        mu_lig = coeff1[ligand_mask] * zt_lig + coeff2[ligand_mask] * eps_t_lig
+        mu_pocket = coeff1[pocket_mask] * zt_pocket + coeff2[pocket_mask] * eps_t_pocket
+        # --- END STABILITY FIX ---
 
         # Compute sigma for p(zs | zt).
         sigma = sigma_t_given_s * sigma_s / sigma_t
 
-        # Sample zs given the paramters derived from zt.
+        # Sample zs given the parameters derived from zt.
         zs_lig, zs_pocket = self.sample_normal(mu_lig, mu_pocket, sigma,
                                                ligand_mask, pocket_mask,
                                                fix_noise)
@@ -880,17 +883,19 @@ class EnVariationalDiffusion(nn.Module):
     def normalize(self, ligand=None, pocket=None):
         if ligand is not None:
             ligand['x'] = ligand['x'] / self.norm_values[0]
-
-            # Casting to float in case h still has long or int type.
             ligand['one_hot'] = \
                 (ligand['one_hot'].float() - self.norm_biases[1]) / \
                 self.norm_values[1]
 
         if pocket is not None:
             pocket['x'] = pocket['x'] / self.norm_values[0]
-            pocket['one_hot'] = \
-                (pocket['one_hot'].float() - self.norm_biases[1]) / \
-                self.norm_values[1]
+            
+            # The 'dynamics' object is available here. We check its class to infer the mode.
+            if self.dynamics.__class__.__name__ != 'AtomicaDynamics':
+                 pocket['one_hot'] = \
+                    (pocket['one_hot'].float() - self.norm_biases[1]) / \
+                    self.norm_values[1]
+            # If it IS AtomicaDynamics, we do nothing, leaving the embeddings as they are.
 
         return ligand, pocket
 

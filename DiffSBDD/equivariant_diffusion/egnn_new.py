@@ -29,12 +29,12 @@ class GCL(nn.Module):
                 nn.Sigmoid())
 
     def edge_model(self, source, target, edge_attr, edge_mask):
-        if edge_attr is None:  # Unused.
+        if edge_attr is None:
             out = torch.cat([source, target], dim=1)
         else:
             out = torch.cat([source, target, edge_attr], dim=1)
         mij = self.edge_mlp(out)
-
+       
         if self.attention:
             att_val = self.att_mlp(mij)
             out = mij * att_val
@@ -50,6 +50,7 @@ class GCL(nn.Module):
         agg = unsorted_segment_sum(edge_attr, row, num_segments=x.size(0),
                                    normalization_factor=self.normalization_factor,
                                    aggregation_method=self.aggregation_method)
+        
         if node_attr is not None:
             agg = torch.cat([x, agg, node_attr], dim=1)
         else:
@@ -93,19 +94,31 @@ class EquivariantUpdate(nn.Module):
         self.normalization_factor = normalization_factor
         self.aggregation_method = aggregation_method
 
+    def scaled_soft_clip(self, x, limit):
+        """
+        Scaled Soft Clipping (Softsign).
+        Behaves linearly near 0, but smoothly asymptotes to +/- limit.
+        Solves vanishing gradient of tanh while keeping outputs bounded.
+        """
+        return limit * (x / (1 + torch.abs(x)))
+
     def coord_model(self, h, coord, edge_index, coord_diff, coord_cross,
                     edge_attr, edge_mask, update_coords_mask=None):
         row, col = edge_index
         input_tensor = torch.cat([h[row], h[col], edge_attr], dim=1)
         if self.tanh:
-            trans = coord_diff * torch.tanh(self.coord_mlp(input_tensor)) * self.coords_range
+            # trans = coord_diff * torch.tanh(self.coord_mlp(input_tensor)) * self.coords_range
+            # FIX: Use Scaled Soft Clipping instead of Tanh
+            trans = coord_diff * self.scaled_soft_clip(self.coord_mlp(input_tensor), self.coords_range)
         else:
             trans = coord_diff * self.coord_mlp(input_tensor)
 
         if not self.reflection_equiv:
             phi_cross = self.cross_product_mlp(input_tensor)
             if self.tanh:
-                phi_cross = torch.tanh(phi_cross) * self.coords_range
+                # phi_cross = torch.tanh(phi_cross) * self.coords_range
+                # FIX: Use Scaled Soft Clipping instead of Tanh
+                phi_cross = self.scaled_soft_clip(phi_cross, self.coords_range)
             trans = trans + coord_cross * phi_cross
 
         if edge_mask is not None:
@@ -162,23 +175,27 @@ class EquivariantBlock(nn.Module):
 
     def forward(self, h, x, edge_index, node_mask=None, edge_mask=None,
                 edge_attr=None, update_coords_mask=None, batch_mask=None):
-        # Edit Emiel: Remove velocity as input
         distances, coord_diff = coord2diff(x, edge_index, self.norm_constant)
+
         if self.reflection_equiv:
             coord_cross = None
         else:
             coord_cross = coord2cross(x, edge_index, batch_mask,
-                                      self.norm_constant)
+                                    self.norm_constant)
+
         if self.sin_embedding is not None:
             distances = self.sin_embedding(distances)
-        edge_attr = torch.cat([distances, edge_attr], dim=1)
+        if edge_attr is not None:
+            edge_attr = torch.cat([distances, edge_attr], dim=1)
+        else:
+            edge_attr = distances
+
         for i in range(0, self.n_layers):
             h, _ = self._modules["gcl_%d" % i](h, edge_index, edge_attr=edge_attr,
-                                               node_mask=node_mask, edge_mask=edge_mask)
+                                            node_mask=node_mask, edge_mask=edge_mask)
         x = self._modules["gcl_equiv"](h, x, edge_index, coord_diff, coord_cross, edge_attr,
-                                       node_mask, edge_mask, update_coords_mask=update_coords_mask)
+                                    node_mask, edge_mask, update_coords_mask=update_coords_mask)
 
-        # Important, the bias of the last linear might be non-zero
         if node_mask is not None:
             h = h * node_mask
         return h, x
@@ -202,10 +219,10 @@ class EGNN(nn.Module):
 
         if sin_embedding:
             self.sin_embedding = SinusoidsEmbeddingNew()
-            edge_feat_nf = self.sin_embedding.dim * 2
+            edge_feat_nf = self.sin_embedding.dim + 1
         else:
             self.sin_embedding = None
-            edge_feat_nf = 2
+            edge_feat_nf = 1
 
         edge_feat_nf = edge_feat_nf + in_edge_nf
 
@@ -224,59 +241,18 @@ class EGNN(nn.Module):
 
     def forward(self, h, x, edge_index, node_mask=None, edge_mask=None, update_coords_mask=None,
                 batch_mask=None, edge_attr=None):
-        # Edit Emiel: Remove velocity as input
-        edge_feat, _ = coord2diff(x, edge_index)
-        if self.sin_embedding is not None:
-            edge_feat = self.sin_embedding(edge_feat)
-        if edge_attr is not None:
-            edge_feat = torch.cat([edge_feat, edge_attr], dim=1)
         h = self.embedding(h)
         for i in range(0, self.n_layers):
             h, x = self._modules["e_block_%d" % i](
                 h, x, edge_index, node_mask=node_mask, edge_mask=edge_mask,
-                edge_attr=edge_feat, update_coords_mask=update_coords_mask,
+                edge_attr=edge_attr, update_coords_mask=update_coords_mask,
                 batch_mask=batch_mask)
 
-        # Important, the bias of the last linear might be non-zero
         h = self.embedding_out(h)
         if node_mask is not None:
             h = h * node_mask
         return h, x
 
-
-class GNN(nn.Module):
-    def __init__(self, in_node_nf, in_edge_nf, hidden_nf, aggregation_method='sum', device='cpu',
-                 act_fn=nn.SiLU(), n_layers=4, attention=False,
-                 normalization_factor=1, out_node_nf=None):
-        super(GNN, self).__init__()
-        if out_node_nf is None:
-            out_node_nf = in_node_nf
-        self.hidden_nf = hidden_nf
-        self.device = device
-        self.n_layers = n_layers
-        ### Encoder
-        self.embedding = nn.Linear(in_node_nf, self.hidden_nf)
-        self.embedding_out = nn.Linear(self.hidden_nf, out_node_nf)
-        for i in range(0, n_layers):
-            self.add_module("gcl_%d" % i, GCL(
-                self.hidden_nf, self.hidden_nf, self.hidden_nf,
-                normalization_factor=normalization_factor,
-                aggregation_method=aggregation_method,
-                edges_in_d=in_edge_nf, act_fn=act_fn,
-                attention=attention))
-        self.to(self.device)
-
-    def forward(self, h, edges, edge_attr=None, node_mask=None, edge_mask=None):
-        # Edit Emiel: Remove velocity as input
-        h = self.embedding(h)
-        for i in range(0, self.n_layers):
-            h, _ = self._modules["gcl_%d" % i](h, edges, edge_attr=edge_attr, node_mask=node_mask, edge_mask=edge_mask)
-        h = self.embedding_out(h)
-
-        # Important, the bias of the last linear might be non-zero
-        if node_mask is not None:
-            h = h * node_mask
-        return h
 
 
 class SinusoidsEmbeddingNew(nn.Module):
@@ -303,31 +279,22 @@ def coord2diff(x, edge_index, norm_constant=1):
 
 
 def coord2cross(x, edge_index, batch_mask, norm_constant=1):
-
-    mean = unsorted_segment_sum(x, batch_mask,
-                                num_segments=batch_mask.max() + 1,
-                                normalization_factor=None,
-                                aggregation_method='mean')
+    mean = unsorted_segment_sum(x, batch_mask, num_segments=batch_mask.max() + 1, normalization_factor=None, aggregation_method='mean')
     row, col = edge_index
-    cross = torch.cross(x[row]-mean[batch_mask[row]],
-                        x[col]-mean[batch_mask[col]], dim=1)
+    cross = torch.cross(x[row]-mean[batch_mask[row]], x[col]-mean[batch_mask[col]], dim=1)
     norm = torch.linalg.norm(cross, dim=1, keepdim=True)
     cross = cross / (norm + norm_constant)
     return cross
 
 
 def unsorted_segment_sum(data, segment_ids, num_segments, normalization_factor, aggregation_method: str):
-    """Custom PyTorch op to replicate TensorFlow's `unsorted_segment_sum`.
-        Normalization: 'sum' or 'mean'.
-    """
     result_shape = (num_segments, data.size(1))
-    result = data.new_full(result_shape, 0)  # Init empty result tensor.
+    result = data.new_full(result_shape, 0)
     segment_ids = segment_ids.unsqueeze(-1).expand(-1, data.size(1))
     result.scatter_add_(0, segment_ids, data)
     if aggregation_method == 'sum':
         result = result / normalization_factor
-
-    if aggregation_method == 'mean':
+    elif aggregation_method == 'mean':
         norm = data.new_zeros(result.shape)
         norm.scatter_add_(0, segment_ids, data.new_ones(data.shape))
         norm[norm == 0] = 1

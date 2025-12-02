@@ -29,7 +29,18 @@ def merge_args_and_yaml(args, config_dict):
 
 
 def merge_configs(config, resume_config):
+    """
+    Merge resume config with current config.
+    """
+    # List of keys that should NOT be overwritten by the checkpoint
+    # This allows adjusting hardware-dependent parameters (like batch_size) when resuming
+    keys_to_keep = {'batch_size', 'num_workers', 'gpus', 'accumulate_grad_batches', 'gradient_clip_val',
+                    'auxiliary_loss', 'loss_params', 'bond_params', 'coord_loss_weight', 'eval_params'}
+
     for key, value in resume_config.items():
+        if key in keys_to_keep:
+            continue
+            
         if isinstance(value, Namespace):
             value = value.__dict__
         
@@ -81,6 +92,7 @@ if __name__ == "__main__":
     args = merge_args_and_yaml(args, config)
 
     out_dir = Path(args.logdir, args.run_name)
+    # Fail loudly if the histogram file is missing
     histogram_file = Path(args.datadir, 'size_distribution.npy')
     histogram = np.load(histogram_file).tolist()
     pl_module = LigandPocketDDPM(
@@ -111,7 +123,7 @@ if __name__ == "__main__":
 
     logger = pl.loggers.WandbLogger(
         save_dir=args.logdir,
-        project='ligand-pocket-ddpm',
+        project=args.wandb_params.project,
         group=args.wandb_params.group,
         name=args.run_name,
         id=args.run_name,
@@ -133,6 +145,7 @@ if __name__ == "__main__":
         max_epochs=args.n_epochs,
         logger=logger,
         callbacks=[checkpoint_callback],
+        precision='16-mixed',
         enable_progress_bar=args.enable_progress_bar,
         num_sanity_val_steps=args.num_sanity_val_steps,
         accelerator='gpu', devices=args.gpus,
