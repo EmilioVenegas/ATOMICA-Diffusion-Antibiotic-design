@@ -577,7 +577,7 @@ class ConditionalDDPM(EnVariationalDiffusion):
 
             z_lig, xh_pocket = self.sample_p_zs_given_zt(
                 s_array, t_array, z_lig, xh_pocket, lig_mask, pocket['mask'],
-                guidance_config=guidance_config, h_atomica=pocket.get('atomica_embeddings')
+                h_atomica=pocket.get('atomica_embeddings')
             )
 
             # save frame
@@ -745,6 +745,12 @@ class ConditionalDDPM(EnVariationalDiffusion):
 
         # Just subtract the center of mass of the sampled part
         mean = scatter_mean(x_lig, lig_indices, dim=0)
+        
+        # Debug: Check if mean is large
+        if mean.abs().max() > 1.0:
+            # Only print once per batch or if very large to avoid spam, but for now print if large
+            # print(f"Info: remove_mean_batch centering data. Mean max abs: {mean.abs().max().item():.3f}")
+            pass
 
         x_lig = x_lig - mean[lig_indices]
         x_pocket = x_pocket - mean[pocket_indices]
