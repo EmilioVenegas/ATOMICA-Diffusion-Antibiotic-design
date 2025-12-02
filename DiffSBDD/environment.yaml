@@ -22,6 +22,9 @@ dependencies:
   - numpy=1.26.4
   - openbabel=3.1.1
   - pandas=2.2.2  
+  - pyarrow>=11.0.0,<15.0.0
+  - pip:
+    - admet-ai
   - seaborn=0.13.2
   - torchmetrics=1.4.2
   - tqdm=4.66.5
