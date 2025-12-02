@@ -25,7 +25,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from ATOMICA.models.prediction_model import PredictionModel
 from ATOMICA.data.pdb_utils import VOCAB
-from DiffSBDD.utils import format_atomica_batch
+from DiffSBDD.utils import format_atomica_batch, get_atomica_embeddings
 from DiffSBDD.constants import atomica_atom_encoder, atomica_block_encoder
 
 
@@ -83,69 +83,7 @@ def prepare_ligand_from_pdb(biopython_atoms, atom_encoder):
     return coord, one_hot
 
 
-def get_atomica_embeddings(biopython_residues, atomica_model, device, pocket_type_encoder):
-    
-    atom_list = [a for res in biopython_residues for a in res.get_atoms()]
-    
-    atomica_input_indices = []
-    atomica_coords = []
-    atom_objects = [] 
-    
-    for atom in atom_list:
-        symbol = atom.element.capitalize()
-        if symbol in atomica_atom_encoder:
-            atomica_input_indices.append(atomica_atom_encoder[symbol])
-            atomica_coords.append(atom.get_coord())
-            atom_objects.append(atom)
-            
-    if not atomica_input_indices:
-        return None
-        
-    # Prepare ATOMICA batch
-    pocket_coords = np.array(atomica_coords)
-    pocket_atomica_types = np.array(atomica_input_indices, dtype=np.int64)
-    
-    # Compute global node position as center of mass
-    global_pos = np.mean(pocket_coords, axis=0)
-    
-    # Prepend global atom
-    pocket_coords_with_global = np.vstack([global_pos, pocket_coords])
-    global_atom_idx = VOCAB.get_atom_global_idx()
-    pocket_atomica_types_with_global = np.concatenate([[global_atom_idx], pocket_atomica_types])
-    
-    # Create block structure
-    global_block_idx = VOCAB.symbol_to_idx(VOCAB.GLB)
-    pocket_B_types = np.array([global_block_idx, atomica_block_encoder.get('UNK', 21)], dtype=np.int64)
-    pocket_block_lengths = np.array([1, len(pocket_atomica_types)], dtype=np.int64)
-    pocket_segment_ids = np.array([0, 0], dtype=np.int64)
-    
-    atomica_batch = format_atomica_batch(
-        pocket_coords_with_global, pocket_atomica_types_with_global,
-        pocket_B_types, pocket_block_lengths,
-        pocket_segment_ids, device
-    )
-    
-    with torch.no_grad():
-        atomica_output = atomica_model.infer(atomica_batch)
-    
-    embeddings = atomica_output.unit_repr.cpu() # (N_atoms + 1, 32)
-    
-    atom_to_embedding = {}
-    for i, atom in enumerate(atom_objects):
-        atom_to_embedding[atom] = embeddings[i+1] # Skip global
-        
-    pocket_embeddings_list = []
-    
-    # Replicate prepare_pocket loop to match atoms
-    for res in biopython_residues:
-        for a in res.get_atoms():
-            if (a.element.capitalize() in pocket_type_encoder or a.element != 'H'):
-                if a in atom_to_embedding:
-                    pocket_embeddings_list.append(atom_to_embedding[a])
-                else:
-                    pocket_embeddings_list.append(torch.zeros(embeddings.shape[1]))
-                    
-    return torch.stack(pocket_embeddings_list).to(device)
+
 
 
 def prepare_substructure(ref_ligand, fix_atoms, pdb_model):
