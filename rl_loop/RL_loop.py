@@ -314,15 +314,35 @@ class RLLoop:
         
         # Load molecules
         input_path = Path(input_path)
+        output_path = Path(output_path)  # Add this line
+
         if input_path.is_file():
             molecules = self.load_molecules_from_sdf(input_path)
             mol_dict = {input_path.name: molecules}
         else:
             mol_dict = self.load_molecules_from_directory(input_path)
         
-        # Convert to SMILES
-        smiles_data = self.convert_to_smiles(mol_dict)
-        
+        # Convert to SMILES - handle mol_dict properly
+        smiles_data = []
+        for file_name, molecules in mol_dict.items():
+            for i, mol in enumerate(molecules):
+                smiles = None
+                try:
+                    mol_copy = Chem.Mol(mol)
+                    Chem.RemoveStereochemistry(mol_copy)
+                    mol_copy = Chem.RemoveHs(mol_copy)
+                    smiles = Chem.MolToSmiles(mol_copy)
+                except Exception as e:
+                    if self.verbose:
+                        print(f"  Warning: Failed to convert molecule to SMILES: {e}")
+                
+                if smiles:
+                    smiles_data.append({
+                        'molecule_id': f"{Path(file_name).stem}_{i}",
+                        'smiles': smiles,
+                        'source_file': file_name
+                    })
+
         # Create dataframe
         df = pd.DataFrame(smiles_data)
         
@@ -338,10 +358,15 @@ class RLLoop:
         
         # Merge ADMET scores
         if admet_scores is not None and not admet_scores.empty:
-            # Reset index if SMILES is in index
+            # Reset index to convert SMILES index to column
             admet_scores_reset = admet_scores.reset_index()
-            if admet_scores_reset.index.name == 'smiles' or 'smiles' in admet_scores_reset.index.names:
-                admet_scores_reset = admet_scores_reset.rename_axis('smiles').reset_index()
+            
+            # Check if 'smiles' column exists after reset
+            if 'smiles' not in admet_scores_reset.columns:
+                # If not, the index name might be something else, rename first column
+                if len(admet_scores_reset.columns) > 0:
+                    first_col = admet_scores_reset.columns[0]
+                    admet_scores_reset = admet_scores_reset.rename(columns={first_col: 'smiles'})
             
             df = df.merge(admet_scores_reset, on='smiles', how='left', suffixes=('', '_admet'))
             
@@ -468,3 +493,5 @@ def main():
         top_sdf_count=args.top_sdf_count
     )
 
+if __name__ == "__main__":
+    main()
