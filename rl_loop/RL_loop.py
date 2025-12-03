@@ -220,8 +220,66 @@ class RLLoop:
         else:
             mol_dict = self.load_molecules_from_directory(input_path)
         
-        # TODO: compute df, compute scores, rank, assign molecule_id, etc.
-        # (You must fill in the missing scoring block here)
+                # Build dataframe of molecules and SMILES
+        if not mol_dict:
+            print("Error: No molecules loaded")
+            return
+
+        all_data = []
+        for filename, molecules in mol_dict.items():
+            smiles_list = self.convert_to_smiles(molecules)
+            for idx, (mol, smiles) in enumerate(zip(molecules, smiles_list)):
+                if smiles is not None:
+                    all_data.append({
+                        'molecule_id': f"{filename}_{idx}",
+                        'smiles': smiles,
+                        'source_file': filename
+                    })
+
+        df = pd.DataFrame(all_data)
+
+        if df.empty:
+            print("Error: No valid SMILES generated")
+            return
+
+        # Score with ADMET-AI
+        admet_scores = self.score_with_admet(df['smiles'].tolist())
+
+        if not admet_scores.empty:
+            admet_scores_reset = admet_scores.reset_index()
+            if 'smiles' in admet_scores_reset.columns:
+                df = df.merge(admet_scores_reset, on='smiles', how='left')
+            else:
+                admet_scores_reset = admet_scores.reset_index()
+                admet_scores_reset = admet_scores_reset.rename(
+                    columns={admet_scores_reset.columns[0]: 'smiles'}
+                )
+                df = df.merge(admet_scores_reset, on='smiles', how='left')
+
+            # Compute composite score and rank
+            df['composite_score'] = self.compute_composite_score(df)
+            df = self.rank_by_score(df, score_col='composite_score', ascending=False)
+
+        # Save results CSV
+        self.save_results(df, output_path, top_k=top_k)
+
+        # Save top molecules as SDF if requested
+        if save_top_sdf and not df.empty:
+            mol_id_to_mol = {}
+            for file_mols in mol_dict.values():
+                for i, mol in enumerate(file_mols):
+                    mol_id = f"{input_path.stem}_{i}"
+                    mol_id_to_mol[mol_id] = mol
+
+            sdf_output = output_path.parent / f"{output_path.stem}_top{top_sdf_count}.sdf"
+            self.save_top_molecules_sdf(df, mol_id_to_mol, sdf_output, top_k=top_sdf_count)
+
+        print("="*60)
+        print("Pipeline complete!")
+        if not df.empty and 'composite_score' in df.columns:
+            print(f"Top molecule: {df.iloc[0]['molecule_id']} "
+                  f"(score: {df.iloc[0]['composite_score']:.3f})")
+        print("="*60)
         
         # Save results
         self.save_results(df, output_path, top_k=top_k)
