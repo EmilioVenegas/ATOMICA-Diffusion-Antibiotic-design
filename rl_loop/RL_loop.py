@@ -320,3 +320,6 @@ def main():
         save_top_sdf=args.save_top_sdf,
         top_sdf_count=args.top_sdf_count
     )
+    
+if __name__ == "__main__":
+    main()
