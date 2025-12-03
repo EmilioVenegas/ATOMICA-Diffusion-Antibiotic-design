@@ -202,25 +202,25 @@ class RLLoop:
         if self.verbose:
             print(f"✓ Saved {len(df)} results to {output_path}")
     
-    def run_pipeline(self, input_path: Path, output_path: Path, 
+        def run_pipeline(self, input_path: Path, output_path: Path, 
                      top_k: Optional[int] = None,
                      save_top_sdf: bool = False,
                      top_sdf_count: int = 1):
         """
         Run the complete RL loop pipeline
         """
-        print("="*60)
+        print("=" * 60)
         print("RL LOOP: ADMET-AI Guided Ligand Optimization")
-        print("="*60)
-        
+        print("=" * 60)
+
         input_path = Path(input_path)
         if input_path.is_file():
             molecules = self.load_molecules_from_sdf(input_path)
             mol_dict = {input_path.name: molecules}
         else:
             mol_dict = self.load_molecules_from_directory(input_path)
-        
-                # Build dataframe of molecules and SMILES
+
+        # Build dataframe of molecules and SMILES
         if not mol_dict:
             print("Error: No molecules loaded")
             return
@@ -265,41 +265,22 @@ class RLLoop:
 
         # Save top molecules as SDF if requested
         if save_top_sdf and not df.empty:
+            # Flatten mol_dict into a single id→mol dict
             mol_id_to_mol = {}
-            for file_mols in mol_dict.values():
-                for i, mol in enumerate(file_mols):
-                    mol_id = f"{input_path.stem}_{i}"
+            for filename, molecules in mol_dict.items():
+                for i, mol in enumerate(molecules):
+                    mol_id = f"{filename}_{i}"
                     mol_id_to_mol[mol_id] = mol
 
             sdf_output = output_path.parent / f"{output_path.stem}_top{top_sdf_count}.sdf"
             self.save_top_molecules_sdf(df, mol_id_to_mol, sdf_output, top_k=top_sdf_count)
 
-        print("="*60)
+        print("=" * 60)
         print("Pipeline complete!")
         if not df.empty and 'composite_score' in df.columns:
             print(f"Top molecule: {df.iloc[0]['molecule_id']} "
                   f"(score: {df.iloc[0]['composite_score']:.3f})")
-        print("="*60)
-        
-        # Save results
-        self.save_results(df, output_path, top_k=top_k)
-        
-        # Save top molecules
-        if save_top_sdf and not df.empty:
-            mol_id_to_mol = {}
-            for file_mols in mol_dict.values():
-                for i, mol in enumerate(file_mols):
-                    mol_id = f"{input_path.stem}_{i}"
-                    mol_id_to_mol[mol_id] = mol
-            
-            sdf_output = output_path.parent / f"{output_path.stem}_top{top_sdf_count}.sdf"
-            self.save_top_molecules_sdf(df, mol_id_to_mol, sdf_output, top_k=top_sdf_count)
-        
-        print("="*60)
-        print("Pipeline complete!")
-        if not df.empty and 'composite_score' in df.columns:
-            print(f"Top molecule: {df.iloc[0]['molecule_id']} (score: {df.iloc[0]['composite_score']:.3f})")
-        print("="*60)
+        print("=" * 60)
     
     def save_top_molecules_sdf(self, df: pd.DataFrame, molecules_dict: dict, 
                                output_path: Path, top_k: int = 1):
