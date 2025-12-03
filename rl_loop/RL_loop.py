@@ -295,96 +295,118 @@ class RLLoop:
             print(f"✓ Saved {len(df)} results to {output_path}")
     
     def run_pipeline(self, input_path: Path, output_path: Path, 
-                    top_k: Optional[int] = None):
-        """
-        Run the complete RL loop pipeline
+                top_k: Optional[int] = None,
+                save_top_sdf: bool = False,
+                top_sdf_count: int = 1):
+    """
+    Run the complete RL loop pipeline
+    
+    Args:
+        input_path: Path to SDF file or directory
+        output_path: Path for output CSV
+        top_k: Only save top k molecules in CSV
+        save_top_sdf: Also save top molecule(s) as SDF
+        top_sdf_count: Number of top molecules to save as SDF (default: 1)
+    """
+    print("="*60)
+    print("RL LOOP: ADMET-AI Guided Ligand Optimization")
+    print("="*60)
+    
+    # Load molecules
+    input_path = Path(input_path)
+    if input_path.is_file():
+        molecules = self.load_molecules_from_sdf(input_path)
+        mol_dict = {input_path.name: molecules}
+    else:
+        mol_dict = self.load_molecules_from_directory(input_path)
+    
+    # ... existing code for creating df and scoring ...
+    
+    # Save results
+    self.save_results(df, output_path, top_k=top_k)
+    
+    # Save top molecule(s) as SDF if requested
+    if save_top_sdf and not df.empty:
+        # Create molecule_id to mol mapping
+        mol_id_to_mol = {}
+        for file_mols in mol_dict.values():
+            for i, mol in enumerate(file_mols):
+                mol_id = f"{input_path.stem}_{i}"
+                mol_id_to_mol[mol_id] = mol
         
-        Args:
-            input_path: Path to SDF file or directory
-            output_path: Path for output CSV
-            top_k: Only save top k molecules
-        """
-        print("="*60)
-        print("RL LOOP: ADMET-AI Guided Ligand Optimization")
-        print("="*60)
+        # Determine output path for SDF
+        sdf_output = output_path.parent / f"{output_path.stem}_top{top_sdf_count}.sdf"
         
-        # Load molecules
-        input_path = Path(input_path)
-        if input_path.is_file():
-            molecules = self.load_molecules_from_sdf(input_path)
-            mol_dict = {input_path.name: molecules}
+        self.save_top_molecules_sdf(df, mol_id_to_mol, sdf_output, top_k=top_sdf_count)
+    
+    print("="*60)
+    print("Pipeline complete!")
+    if not df.empty and 'composite_score' in df.columns:
+        print(f"Top molecule: {df.iloc[0]['molecule_id']} (score: {df.iloc[0]['composite_score']:.3f})")
+    print("="*60)
+    
+    def save_top_molecules_sdf(self, df: pd.DataFrame, molecules_dict: dict, 
+                           output_path: Path, top_k: int = 1):
+    """
+    Save top-k molecules as SDF file
+    
+    Args:
+        df: DataFrame with ranked results (must have 'smiles' column)
+        molecules_dict: Dictionary mapping molecule_id to RDKit mol objects
+        output_path: Output SDF file path
+        top_k: Number of top molecules to save (default: 1)
+    """
+    if df.empty:
+        if self.verbose:
+            print("Warning: No molecules to save")
+        return
+    
+    # Get top-k molecules
+    top_df = df.head(top_k)
+    
+    # Create mapping from SMILES to mol
+    smiles_to_mol = {}
+    for mol_id, mol in molecules_dict.items():
+        if mol is not None:
+            smiles = Chem.MolToSmiles(mol)
+            smiles_to_mol[smiles] = mol
+    
+    # Write SDF
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    writer = Chem.SDWriter(str(output_path))
+    saved_count = 0
+    
+    for idx, row in top_df.iterrows():
+        smiles = row['smiles']
+        if smiles in smiles_to_mol:
+            mol = smiles_to_mol[smiles]
+            # Add properties to molecule
+            mol.SetProp('_Name', str(row.get('molecule_id', f'mol_{idx}')))
+            mol.SetProp('rank', str(row.get('rank', idx + 1)))
+            mol.SetProp('composite_score', str(row.get('composite_score', 0.0)))
+            mol.SetProp('smiles', smiles)
+            
+            writer.write(mol)
+            saved_count += 1
         else:
-            mol_dict = self.load_molecules_from_directory(input_path)
-        
-        if not mol_dict:
-            print("Error: No molecules loaded")
-            return
-        
-        # Process all molecules
-        all_data = []
-        for filename, molecules in mol_dict.items():
-            # Convert to SMILES
-            smiles_list = self.convert_to_smiles(molecules)
-            
-            # Create DataFrame
-            for idx, (mol, smiles) in enumerate(zip(molecules, smiles_list)):
-                if smiles is not None:
-                    all_data.append({
-                        'molecule_id': f"{filename}_{idx}",
-                        'smiles': smiles,
-                        'source_file': filename
-                    })
-        
-        df = pd.DataFrame(all_data)
-        
-        if df.empty:
-            print("Error: No valid SMILES generated")
-            return
-        
-        # Score with ADMET-AI
-        admet_scores = self.score_with_admet(df['smiles'].tolist())
-        
-        if not admet_scores.empty:
-            # Merge ADMET scores
-            # Reset index on admet_scores to make SMILES a column, then merge
-            admet_scores_reset = admet_scores.reset_index()
-            if 'smiles' in admet_scores_reset.columns:
-                # Merge on SMILES column
-                df = df.merge(admet_scores_reset, on='smiles', how='left')
-            else:
-                # If SMILES is the index name, rename it
-                admet_scores_reset = admet_scores.reset_index()
-                admet_scores_reset = admet_scores_reset.rename(columns={admet_scores_reset.columns[0]: 'smiles'})
-                df = df.merge(admet_scores_reset, on='smiles', how='left')
-            
-            # Compute composite score
-            df['composite_score'] = self.compute_composite_score(df)            
-            # Rank molecules
-            df = self.rank_by_score(df, score_col='composite_score', ascending=False)
-        
-        # Save results
-        self.save_results(df, output_path, top_k=top_k)
-        
-        print("="*60)
-        print("Pipeline complete!")
-        if not df.empty and 'composite_score' in df.columns:
-            print(f"Top molecule: {df.iloc[0]['molecule_id']} (score: {df.iloc[0]['composite_score']:.3f})")
-        print("="*60)
+            if self.verbose:
+                print(f"  Warning: Could not find molecule for SMILES: {smiles[:50]}...")
+    
+    writer.close()
+    
+    if self.verbose:
+        print(f"✓ Saved top-{top_k} molecule(s) to {output_path}")
+    
+    return saved_count
 
 
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(
         description='RL Loop: Score and rank ligands using ADMET-AI',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Score example ligands
-  python RL_loop.py -i ../DiffSBDD/example -o results/scored.csv
-  
-  # Score generated ligands and keep top 10
-  python RL_loop.py -i examples/generated.sdf -o results/top10.csv -k 10
-        """
+        # ... existing args ...
     )
     
     parser.add_argument('-i', '--input', required=True,
@@ -393,6 +415,10 @@ Examples:
                        help='Output CSV file')
     parser.add_argument('-k', '--top_k', type=int, default=None,
                        help='Only save top k molecules (default: all)')
+    parser.add_argument('--save_top_sdf', action='store_true',
+                       help='Also save top molecule(s) as SDF file')
+    parser.add_argument('--top_sdf_count', type=int, default=1,
+                       help='Number of top molecules to save as SDF (default: 1)')
     parser.add_argument('-q', '--quiet', action='store_true',
                        help='Suppress progress messages')
     
@@ -403,10 +429,8 @@ Examples:
     rl_loop.run_pipeline(
         input_path=args.input,
         output_path=args.output,
-        top_k=args.top_k
+        top_k=args.top_k,
+        save_top_sdf=args.save_top_sdf,
+        top_sdf_count=args.top_sdf_count
     )
-
-
-if __name__ == '__main__':
-    main()
 
