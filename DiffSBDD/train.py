@@ -142,21 +142,35 @@ if __name__ == "__main__":
 
     if ckpt_path is not None:
         print(f"Loading pre-trained weights from: {ckpt_path}")
-        print("Transfer learning mode: loading backbone weights, initializing ATOMICA layers randomly")
+        
+        # Check if we are doing transfer learning (missing keys expected) or resuming
         checkpoint = torch.load(ckpt_path, map_location='cpu')
+        state_dict = checkpoint['state_dict']
         
-        # Load state dict with strict=False to allow missing keys (ATOMICA layers)
-        missing_keys, unexpected_keys = pl_module.load_state_dict(
-            checkpoint['state_dict'], strict=False)
-        
-        if missing_keys:
-            print(f"Initialized {len(missing_keys)} new parameters (ATOMICA layers):")
-            for key in missing_keys[:5]:  # Show first 5
-                print(f"  - {key}")
-            if len(missing_keys) > 5:
-                print(f"  ... and {len(missing_keys) - 5} more")
-        
-        # Train from epoch 0 (transfer learning, not resuming)
-        trainer.fit(model=pl_module)
+        # Try to load strict to see if it matches
+        try:
+            pl_module.load_state_dict(state_dict, strict=True)
+            is_exact_match = True
+        except RuntimeError:
+            is_exact_match = False
+            
+        if is_exact_match:
+            print("Checkpoint matches model architecture exactly. Resuming training state (epochs, optimizer)...")
+            trainer.fit(model=pl_module, ckpt_path=ckpt_path)
+        else:
+            print("Transfer learning mode: loading backbone weights, initializing new layers randomly")
+            # Load state dict with strict=False to allow missing keys (ATOMICA layers)
+            missing_keys, unexpected_keys = pl_module.load_state_dict(
+                state_dict, strict=False)
+            
+            if missing_keys:
+                print(f"Initialized {len(missing_keys)} new parameters (ATOMICA layers):")
+                for key in missing_keys[:5]:  # Show first 5
+                    print(f"  - {key}")
+                if len(missing_keys) > 5:
+                    print(f"  ... and {len(missing_keys) - 5} more")
+            
+            # Train from epoch 0 (transfer learning)
+            trainer.fit(model=pl_module)
     else:
         trainer.fit(model=pl_module)

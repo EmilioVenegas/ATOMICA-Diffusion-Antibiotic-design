@@ -41,3 +41,12 @@ verify_sampling.py
 process_new_antibiotic_data.py
 pdb_complex_analysis.json
 pdb_analysis.log
+DiffSBDD/configs/atomica_train_connectivity.yml
+DiffSBDD/calculate_statistics.py
+affinity_info.pkl
+expert_split.pt
+crossdocked_fullatom_cond.ckpt
+sample_and_visualize.py
+DiffSBDD/__init__.py
+
+DiffSBDD/equivariant_diffusion/__init__.py
