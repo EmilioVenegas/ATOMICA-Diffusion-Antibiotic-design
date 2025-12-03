@@ -310,3 +310,6 @@ Examples:
         verbose=not args.quiet,
         **filter_kwargs
     )
+
+if __name__ == '__main__':
+    main()
