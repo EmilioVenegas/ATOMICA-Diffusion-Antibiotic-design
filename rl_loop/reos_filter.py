@@ -165,6 +165,7 @@ class REOSFilter:
 
 def filter_sdf_file(input_sdf: Path, output_sdf: Path, 
                     max_violations: int = 0,
+                    min_atoms: int = 5,
                     verbose: bool = True,
                     **filter_kwargs):
     """
@@ -174,6 +175,7 @@ def filter_sdf_file(input_sdf: Path, output_sdf: Path,
         input_sdf: Input SDF file path
         output_sdf: Output SDF file path
         max_violations: Maximum violations allowed (0 = strict)
+        min_atoms: Minimum number of atoms required (default: 5)
         verbose: Print progress
         **filter_kwargs: REOS filter parameters
     """
@@ -183,10 +185,17 @@ def filter_sdf_file(input_sdf: Path, output_sdf: Path,
     # Load molecules
     supplier = Chem.SDMolSupplier(str(input_sdf), sanitize=False)
     molecules = []
+    small_molecules_removed = 0
     for mol in supplier:
         if mol is not None:
             try:
                 Chem.SanitizeMol(mol)
+                # Filter out molecules with < min_atoms
+                if mol.GetNumAtoms() < min_atoms:
+                    small_molecules_removed += 1
+                    if verbose:
+                        print(f"  Removed molecule with {mol.GetNumAtoms()} atoms (< {min_atoms})")
+                    continue
                 molecules.append(mol)
             except:
                 if verbose:
@@ -194,6 +203,8 @@ def filter_sdf_file(input_sdf: Path, output_sdf: Path,
     
     if verbose:
         print(f"✓ Loaded {len(molecules)} valid molecules")
+        if small_molecules_removed > 0:
+            print(f"  Removed {small_molecules_removed} molecules with < {min_atoms} atoms")
     
     # Create filter
     reos = REOSFilter(max_violations=max_violations, **filter_kwargs)
@@ -209,7 +220,7 @@ def filter_sdf_file(input_sdf: Path, output_sdf: Path,
         print(f"\n{'='*60}")
         print(f"REOS Filter Results")
         print(f"{'='*60}")
-        print(f"Total molecules: {stats['total']}")
+        print(f"Total molecules (after size filter): {stats['total']}")
         print(f"Passed: {stats['passed']} ({stats['passed']/stats['total']*100:.1f}%)")
         print(f"Failed: {stats['failed']} ({stats['failed']/stats['total']*100:.1f}%)")
         if stats['violations']:
@@ -268,6 +279,8 @@ Examples:
     parser.add_argument('--heavy_atoms_max', type=int, default=50, help='Max heavy atoms')
     parser.add_argument('--max_violations', type=int, default=0, 
                        help='Max violations allowed (0 = strict)')
+    parser.add_argument('--min_atoms', type=int, default=5,
+                       help='Minimum number of atoms required (default: 5)')
     parser.add_argument('--quiet', action='store_true', help='Suppress output')
     
     args = parser.parse_args()
@@ -293,10 +306,7 @@ Examples:
         args.input_sdf,
         args.output_sdf,
         max_violations=args.max_violations,
+        min_atoms=args.min_atoms,
         verbose=not args.quiet,
         **filter_kwargs
     )
-
-
-if __name__ == '__main__':
-    main()

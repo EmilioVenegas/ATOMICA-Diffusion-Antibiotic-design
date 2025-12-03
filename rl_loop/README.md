@@ -103,30 +103,116 @@ scores = rl.score_with_admet(smiles)
 ranked = rl.rank_by_score(scores)
 rl.save_results(ranked, "results/example_output.csv")
 
-Next Steps (Roadmap)
+## Additional Tools
 
-These items were discussed but NOT implemented yet in this working branch.
+### Testing
 
-High Priority
+**`test_rl_loop.py`** - Test script to verify RL loop functionality
 
- Integrate SA score & Brenk structural alerts
+# Run tests with example ligands
+python rl_loop/test_rl_loop.pyThis script:
+- Tests loading molecules from SDF files
+- Tests SMILES conversion
+- Tests ADMET-AI scoring (if available)
+- Runs a full pipeline test
+- Outputs results to `rl_loop/results/test_output.csv`
 
- Define multi-objective composite scoring
+### Diversity Analysis
 
- Stabilize scoring on large ligand sets
+**`tanimoto_similarity.py`** - Analyze molecular diversity using Tanimoto similarity
 
- Add unit tests for ranking
+# Analyze top-10 from scored CSV
+python rl_loop/tanimoto_similarity.py \
+    --input rl_loop/results/generated_from_refactor_scored.csv \
+    --top_k 10 \
+    --threshold 0.7 \
+    --output rl_loop/results/top10_diversity.csv
 
-Medium Priority
+# Analyze SDF file directly
+python rl_loop/tanimoto_similarity.py \
+    --input rl_loop/examples/generated_from_refactor.sdf \
+    --top_k 20 \
+    --threshold 0.6
+**Options:**
+- `--input, -i` - Input CSV (scored) or SDF file (required)
+- `--top_k, -k` - Number of top molecules to analyze (default: 10)
+- `--threshold, -t` - Similarity threshold for clustering (default: 0.7)
+- `--fingerprint, -f` - Fingerprint type: `RDKit` or `Morgan` (default: RDKit)
+- `--output, -o` - Output CSV path for cluster assignments (optional)
+- `--quiet, -q` - Suppress progress messages
 
- Weighted scoring configuration
+**Output:**
+- Console report with diversity metrics
+- CSV file with cluster assignments (if `--output` specified)
+- Metrics: number of clusters, average pairwise similarity, cluster sizes
 
- Property-specific filtering (e.g., hERG)
+### REOS Filtering
 
- Visualization tools for property distributions
+**`reos_filter.py`** - Filter ligands using REOS (Rapid Elimination Of Swill) criteria
 
-Low Priority
+# Filter with default REOS criteria (strict)
+python rl_loop/reos_filter.py \
+    rl_loop/examples/generated_from_refactor.sdf \
+    rl_loop/results/generated_ligands_filtered.sdf
 
- Logging / progress indicators
+# Allow 1 violation
+python rl_loop/reos_filter.py \
+    rl_loop/examples/generated_from_refactor.sdf \
+    rl_loop/results/generated_ligands_filtered.sdf \
+    --max_violations 1
 
- Batch scoring optimization
+# Custom criteria
+python rl_loop/reos_filter.py \
+    rl_loop/examples/generated_from_refactor.sdf \
+    rl_loop/results/generated_ligands_filtered.sdf \
+    --mw_min 250 --mw_max 450 \
+    --logp_max 4.0 \
+    --rot_bonds_max 7**Options:**
+- `input_sdf` - Input SDF file (required, positional)
+- `output_sdf` - Output filtered SDF file (required, positional)
+- `--mw_min, --mw_max` - Molecular weight range (default: 200-500)
+- `--logp_min, --logp_max` - LogP range (default: -5.0 to +5.0)
+- `--hbd_min, --hbd_max` - H-bond donors range (default: 0-5)
+- `--hba_min, --hba_max` - H-bond acceptors range (default: 0-10)
+- `--charge_min, --charge_max` - Formal charge range (default: -2 to +2)
+- `--rot_bonds_min, --rot_bonds_max` - Rotatable bonds range (default: 0-8)
+- `--heavy_atoms_min, --heavy_atoms_max` - Heavy atom count range (default: 15-50)
+- `--max_violations` - Maximum violations allowed (default: 0 = strict)
+- `--quiet, -q` - Suppress output
+
+**Default REOS Criteria:**
+- Molecular weight: 200-500
+- LogP: -5.0 to +5.0
+- H-bond donors: 0-5
+- H-bond acceptors: 0-10
+- Formal charge: -2 to +2
+- Rotatable bonds: 0-8
+- Heavy atoms: 15-50
+
+### Complete Pipeline Example
+
+Full workflow with filtering and diversity analysis:
+
+# 1. Generate ligands
+python DiffSBDD/generate_ligands.py checkpoints/last_ckpt.ckpt \
+    --pdbfile example/3rfm.pdb \
+    --ref_ligand A:330 \
+    --outfile rl_loop/examples/generated.sdf \
+    --n_samples 100
+
+# 2. Filter with REOS
+python rl_loop/reos_filter.py \
+    rl_loop/examples/generated.sdf \
+    rl_loop/examples/generated_filtered.sdf
+
+# 3. Score with ADMET-AI
+python rl_loop/RL_loop.py \
+    --input rl_loop/examples/generated_filtered.sdf \
+    --output rl_loop/results/generated_scored.csv
+
+# 4. Analyze diversity of top-10
+python rl_loop/tanimoto_similarity.py \
+    --input rl_loop/results/generated_scored.csv \
+    --top_k 10 \
+    --threshold 0.7 \
+    --output rl_loop/results/top10_diversity.csv
