@@ -213,6 +213,7 @@ class RLLoop:
         print("RL LOOP: ADMET-AI Guided Ligand Optimization")
         print("=" * 60)
 
+        # Load molecules (single SDF or directory)
         input_path = Path(input_path)
         if input_path.is_file():
             molecules = self.load_molecules_from_sdf(input_path)
@@ -231,9 +232,9 @@ class RLLoop:
             for idx, (mol, smiles) in enumerate(zip(molecules, smiles_list)):
                 if smiles is not None:
                     all_data.append({
-                        'molecule_id': f"{filename}_{idx}",
-                        'smiles': smiles,
-                        'source_file': filename
+                        "molecule_id": f"{filename}_{idx}",
+                        "smiles": smiles,
+                        "source_file": filename,
                     })
 
         df = pd.DataFrame(all_data)
@@ -243,29 +244,27 @@ class RLLoop:
             return
 
         # Score with ADMET-AI
-        admet_scores = self.score_with_admet(df['smiles'].tolist())
+        admet_scores = self.score_with_admet(df["smiles"].tolist())
 
         if not admet_scores.empty:
             admet_scores_reset = admet_scores.reset_index()
-            if 'smiles' in admet_scores_reset.columns:
-                df = df.merge(admet_scores_reset, on='smiles', how='left')
+            if "smiles" in admet_scores_reset.columns:
+                df = df.merge(admet_scores_reset, on="smiles", how="left")
             else:
-                admet_scores_reset = admet_scores.reset_index()
                 admet_scores_reset = admet_scores_reset.rename(
-                    columns={admet_scores_reset.columns[0]: 'smiles'}
+                    columns={admet_scores_reset.columns[0]: "smiles"}
                 )
-                df = df.merge(admet_scores_reset, on='smiles', how='left')
+                df = df.merge(admet_scores_reset, on="smiles", how="left")
 
             # Compute composite score and rank
-            df['composite_score'] = self.compute_composite_score(df)
-            df = self.rank_by_score(df, score_col='composite_score', ascending=False)
+            df["composite_score"] = self.compute_composite_score(df)
+            df = self.rank_by_score(df, score_col="composite_score", ascending=False)
 
         # Save results CSV
         self.save_results(df, output_path, top_k=top_k)
 
         # Save top molecules as SDF if requested
         if save_top_sdf and not df.empty:
-            # Flatten mol_dict into a single id→mol dict
             mol_id_to_mol = {}
             for filename, molecules in mol_dict.items():
                 for i, mol in enumerate(molecules):
@@ -273,13 +272,17 @@ class RLLoop:
                     mol_id_to_mol[mol_id] = mol
 
             sdf_output = output_path.parent / f"{output_path.stem}_top{top_sdf_count}.sdf"
-            self.save_top_molecules_sdf(df, mol_id_to_mol, sdf_output, top_k=top_sdf_count)
+            self.save_top_molecules_sdf(
+                df, mol_id_to_mol, sdf_output, top_k=top_sdf_count
+            )
 
         print("=" * 60)
         print("Pipeline complete!")
-        if not df.empty and 'composite_score' in df.columns:
-            print(f"Top molecule: {df.iloc[0]['molecule_id']} "
-                  f"(score: {df.iloc[0]['composite_score']:.3f})")
+        if not df.empty and "composite_score" in df.columns:
+            print(
+                f"Top molecule: {df.iloc[0]['molecule_id']} "
+                f"(score: {df.iloc[0]['composite_score']:.3f})"
+            )
         print("=" * 60)
     
     def save_top_molecules_sdf(self, df: pd.DataFrame, molecules_dict: dict, 
