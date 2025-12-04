@@ -1,0 +1,79 @@
+,Binder,Notes,Reference,Canonical SMILES,Isomeric SMILES,Pubchem CID,PDB,Year PDB released
+PBP3 (A. baumannii),Sulbactam,,https://journals.asm.org/doi/10.1128/aac.01258-23,CC1(C(N2C(S1(=O)=O)CC2=O)C(=O)O)C,CC1([C@@H](N2[C@H](S1(=O)=O)CC2=O)C(=O)O)C,130313,,
+,Sulbactam/durlobactam,,https://www.sciencedirect.com/science/article/abs/pii/S1198743X25004665,CC1=CC2CN(C1C(=O)N)C(=O)N2OS(=O)(=O)O,CC1=C[C@@H]2CN([C@@H]1C(=O)N)C(=O)N2OS(=O)(=O)O,89851852,,
+,Aztreonam,,https://www.sciencedirect.com/science/article/abs/pii/S0003269713001838,CC1C(C(=O)N1S(=O)(=O)O)NC(=O)C(=NOC(C)(C)C(=O)O)C2=CSC(=N2)N,C[C@H]1[C@@H](C(=O)N1S(=O)(=O)O)NC(=O)/C(=N\OC(C)(C)C(=O)O)/C2=CSC(=N2)N,5742832,,
+,Bocillin FL,,"""",[B-]1(N2C(=CC(=C2C=C3[N+]1=C(C=C3)CCC(=O)NC4=CC=C(C=C4)OCC(=O)NC5C6N(C5=O)C(C(S6)(C)C)C(=O)[O-])C)C)(F)F.[Na+],[B-]1(N2C(=CC(=C2C=C3[N+]1=C(C=C3)CCC(=O)NC4=CC=C(C=C4)OCC(=O)N[C@H]5[C@@H]6N(C5=O)[C@H](C(S6)(C)C)C(=O)[O-])C)C)(F)F.[Na+],52941401,,
+,Ceftazidime,,"""",CC(C)(C(=O)O)ON=C(C1=CSC(=N1)N)C(=O)NC2C3N(C2=O)C(=C(CS3)C[N+]4=CC=CC=C4)C(=O)[O-],CC(C)(C(=O)O)O/N=C(/C1=CSC(=N1)N)\C(=O)N[C@H]2[C@@H]3N(C2=O)C(=C(CS3)C[N+]4=CC=CC=C4)C(=O)[O-],5481173,,
+,Meropenem,,"""",CC1C2C(C(=O)N2C(=C1SC3CC(NC3)C(=O)N(C)C)C(=O)O)C(C)O,C[C@@H]1[C@@H]2[C@H](C(=O)N2C(=C1S[C@H]3C[C@H](NC3)C(=O)N(C)C)C(=O)O)[C@@H](C)O,441130,,
+,Tazobactam,,https://pmc.ncbi.nlm.nih.gov/articles/PMC3486531/,CC1(C(N2C(S1(=O)=O)CC2=O)C(=O)O)CN3C=CN=N3,C[C@@]1([C@@H](N2[C@H](S1(=O)=O)CC2=O)C(=O)O)CN3C=CN=N3,123630,,
+,Clavulanic acid,,"""",C1C2N(C1=O)C(C(=CCO)O2)C(=O)O,C1[C@@H]2N(C1=O)[C@H](/C(=C/CO)/O2)C(=O)O,5280980,,
+,Penicillin G,,"""",CC1(C(N2C(S1)C(C2=O)NC(=O)CC3=CC=CC=C3)C(=O)O)C,CC1([C@@H](N2[C@H](S1)[C@@H](C2=O)NC(=O)CC3=CC=CC=C3)C(=O)O)C,5904,,
+,Cephalothin,,"""",CC(=O)OCC1=C(N2C(C(C2=O)NC(=O)CC3=CC=CS3)SC1)C(=O)O,CC(=O)OCC1=C(N2[C@@H]([C@@H](C2=O)NC(=O)CC3=CC=CS3)SC1)C(=O)O,6024,,
+,Cefotaxime,,"""",CC(=O)OCC1=C(N2C(C(C2=O)NC(=O)C(=NOC)C3=CSC(=N3)N)SC1)C(=O)O,CC(=O)OCC1=C(N2[C@@H]([C@@H](C2=O)NC(=O)/C(=N\OC)/C3=CSC(=N3)N)SC1)C(=O)O,5742673,,
+,Oxacillin,,"""",CC1=C(C(=NO1)C2=CC=CC=C2)C(=O)NC3C4N(C3=O)C(C(S4)(C)C)C(=O)O,CC1=C(C(=NO1)C2=CC=CC=C2)C(=O)N[C@H]3[C@@H]4N(C3=O)[C@H](C(S4)(C)C)C(=O)O,6196,,
+,Doripenem,,"""",CC1C2C(C(=O)N2C(=C1SC3CC(NC3)CNS(=O)(=O)N)C(=O)O)C(C)O,C[C@@H]1[C@@H]2[C@H](C(=O)N2C(=C1S[C@H]3C[C@H](NC3)CNS(=O)(=O)N)C(=O)O)[C@@H](C)O,73303,,
+,Ampicillin,,"""",CC1(C(N2C(S1)C(C2=O)NC(=O)C(C3=CC=CC=C3)N)C(=O)O)C,CC1([C@@H](N2[C@H](S1)[C@@H](C2=O)NC(=O)[C@@H](C3=CC=CC=C3)N)C(=O)O)C,6249,,
+,Cefiderocol,,https://journals.asm.org/doi/10.1128/aac.01221-20,CC(C)(C(=O)O)ON=C(C1=CSC(=N1)N)C(=O)NC2C3N(C2=O)C(=C(CS3)C[N+]4(CCCC4)CCNC(=O)C5=C(C(=C(C=C5)O)O)Cl)C(=O)[O-],CC(C)(C(=O)O)O/N=C(/C1=CSC(=N1)N)\C(=O)N[C@H]2[C@@H]3N(C2=O)C(=C(CS3)C[N+]4(CCCC4)CCNC(=O)C5=C(C(=C(C=C5)O)O)Cl)C(=O)[O-],77843966,,
+,Polymyxin B,"Prob weak (not sure if binds to PBP3, but used to treat A baumannii [not successfully])",https://pmc.ncbi.nlm.nih.gov/articles/PMC3486531/,CCC(C)CCCCC(=O)NC(CCN)C(=O)NC(C(C)O)C(=O)NC(CCN)C(=O)NC1CCNC(=O)C(NC(=O)C(NC(=O)C(NC(=O)C(NC(=O)C(NC(=O)C(NC1=O)CCN)CC2=CC=CC=C2)CC(C)C)CCN)CCN)C(C)O.OS(=O)(=O)O,CCC(C)CCCCC(=O)NC(CCN)C(=O)NC(C(C)O)C(=O)NC(CCN)C(=O)NC1CCNC(=O)C(NC(=O)C(NC(=O)C(NC(=O)C(NC(=O)C(NC(=O)C(NC1=O)CCN)CC2=CC=CC=C2)CC(C)C)CCN)CCN)C(C)O.OS(=O)(=O)O,5702105,,
+,Polymyxin E (colistin),"""","""",CCC(C)CCCC(=O)NC(CCN)C(=O)NC(C(C)O)C(=O)NC(CCN)C(=O)NC1CCNC(=O)C(NC(=O)C(NC(=O)C(NC(=O)C(NC(=O)C(NC(=O)C(NC1=O)CCN)CC(C)C)CC(C)C)CCN)CCN)C(C)O,CCC(C)CCCC(=O)N[C@@H](CCN)C(=O)N[C@@H]([C@@H](C)O)C(=O)N[C@@H](CCN)C(=O)N[C@H]1CCNC(=O)[C@@H](NC(=O)[C@@H](NC(=O)[C@@H](NC(=O)[C@@H](NC(=O)[C@H](NC(=O)[C@@H](NC1=O)CCN)CC(C)C)CC(C)C)CCN)CCN)[C@@H](C)O,5311054,,
+,Tigecycline,"""","""",CC(C)(C)NCC(=O)NC1=CC(=C2CC3CC4C(C(=O)C(=C(C4(C(=O)C3=C(C2=C1O)O)O)O)C(=O)N)N(C)C)N(C)C,CC(C)(C)NCC(=O)NC1=CC(=C2C[C@H]3C[C@H]4[C@@H](C(=O)C(=C([C@]4(C(=O)C3=C(C2=C1O)O)O)O)C(=O)N)N(C)C)N(C)C,54686904,,
+,,,,,,,,
+,,,,,,,,
+PBP3 (P. aeruginosa),Meropenem,,https://academic.oup.com/jac/article/79/9/2170/7713246,CC1C2C(C(=O)N2C(=C1SC3CC(NC3)C(=O)N(C)C)C(=O)O)C(C)O,C[C@@H]1[C@@H]2[C@H](C(=O)N2C(=C1S[C@H]3C[C@H](NC3)C(=O)N(C)C)C(=O)O)[C@@H](C)O,441130,https://www.rcsb.org/structure/9FZE,2024
+,Ceftazidime,b-lactam,"""",CC(C)(C(=O)O)ON=C(C1=CSC(=N1)N)C(=O)NC2C3N(C2=O)C(=C(CS3)C[N+]4=CC=CC=C4)C(=O)[O-],CC(C)(C(=O)O)O/N=C(/C1=CSC(=N1)N)\C(=O)N[C@H]2[C@@H]3N(C2=O)C(=C(CS3)C[N+]4=CC=CC=C4)C(=O)[O-],5481173,https://www.rcsb.org/structure/3OCN,2010
+,Cefepime,,"""",C[N+]1(CCCC1)CC2=C(N3C(C(C3=O)NC(=O)C(=NOC)C4=CSC(=N4)N)SC2)C(=O)[O-],C[N+]1(CCCC1)CC2=C(N3[C@@H]([C@@H](C3=O)NC(=O)/C(=N\OC)/C4=CSC(=N4)N)SC2)C(=O)[O-],5479537,https://www.rcsb.org/structure/9FZP,2024
+,Ticarcillin,,"""",CC1(C(N2C(S1)C(C2=O)NC(=O)C(C3=CSC=C3)C(=O)O)C(=O)O)C,CC1([C@@H](N2[C@H](S1)[C@@H](C2=O)NC(=O)[C@@H](C3=CSC=C3)C(=O)O)C(=O)O)C,36921,https://www.rcsb.org/structure/6UN3,2019
+,Imipenem,,"""",CC(C1C2CC(=C(N2C1=O)C(=O)O)SCCN=CN)O,C[C@H]([C@@H]1[C@H]2CC(=C(N2C1=O)C(=O)O)SCCN=CN)O,104838,https://www.rcsb.org/structure/3PBQ,2010
+,Piperacillin,,"""",CCN1CCN(C(=O)C1=O)C(=O)NC(C2=CC=CC=C2)C(=O)NC3C4N(C3=O)C(C(S4)(C)C)C(=O)O,CCN1CCN(C(=O)C1=O)C(=O)N[C@H](C2=CC=CC=C2)C(=O)N[C@H]3[C@@H]4N(C3=O)[C@H](C(S4)(C)C)C(=O)O,43672,https://www.rcsb.org/structure/6R3X,2020
+,Carbenicillin,b-lactam,https://pubmed.ncbi.nlm.nih.gov/20974151/,CC1(C(N2C(S1)C(C2=O)NC(=O)C(C3=CC=CC=C3)C(=O)O)C(=O)O)C,CC1([C@@H](N2[C@H](S1)[C@@H](C2=O)NC(=O)C(C3=CC=CC=C3)C(=O)O)C(=O)O)C,20824,https://www.rcsb.org/structure/3OCL,2010
+,Cefiderocol,,https://pubs.rsc.org/en/content/articlelanding/2024/sc/d4sc04937c,CC(C)(C(=O)O)ON=C(C1=CSC(=N1)N)C(=O)NC2C3N(C2=O)C(=C(CS3)C[N+]4(CCCC4)CCNC(=O)C5=C(C(=C(C=C5)O)O)Cl)C(=O)[O-],CC(C)(C(=O)O)O/N=C(/C1=CSC(=N1)N)\C(=O)N[C@H]2[C@@H]3N(C2=O)C(=C(CS3)C[N+]4(CCCC4)CCNC(=O)C5=C(C(=C(C=C5)O)O)Cl)C(=O)[O-],77843966,https://www.rcsb.org/structure/9FZ7,2024
+,Avibactam,DBO (Diazabicyclooctane),"https://pmc.ncbi.nlm.nih.gov/articles/PMC8545096/#:~:text=aeruginosa%20PBP2%20and%20PBP3%20have,0.55%20and%200.49%20%C3%85%2C%20respectively.",C1CC(N2CC1N(C2=O)OS(=O)(=O)O)C(=O)N,C1C[C@H](N2C[C@@H]1N(C2=O)OS(=O)(=O)O)C(=O)N,9835049,NA,
+,Zidebactam,Very weak - DBO (Diazabicyclooctane),"https://pmc.ncbi.nlm.nih.gov/articles/PMC8545096/#:~:text=aeruginosa%20PBP2%20and%20PBP3%20have,0.55%20and%200.49%20%C3%85%2C%20respectively.",C1CC(CNC1)C(=O)NNC(=O)C2CCC3CN2C(=O)N3OS(=O)(=O)O,C1C[C@H](CNC1)C(=O)NNC(=O)[C@@H]2CC[C@@H]3CN2C(=O)N3OS(=O)(=O)O,77846445,https://www.rcsb.org/structure/7KIW,2021
+,Azlocillin,b-lactam,,CC1(C(N2C(S1)C(C2=O)NC(=O)C(C3=CC=CC=C3)NC(=O)N4CCNC4=O)C(=O)O)C,CC1([C@@H](N2[C@H](S1)[C@@H](C2=O)NC(=O)[C@@H](C3=CC=CC=C3)NC(=O)N4CCNC4=O)C(=O)O)C,6479523,https://www.rcsb.org/structure/5DF7,2016
+,Cefoperazone,b-lactam,,CCN1CCN(C(=O)C1=O)C(=O)NC(C2=CC=C(C=C2)O)C(=O)NC3C4N(C3=O)C(=C(CS4)CSC5=NN=NN5C)C(=O)O,CCN1CCN(C(=O)C1=O)C(=O)N[C@H](C2=CC=C(C=C2)O)C(=O)N[C@H]3[C@@H]4N(C3=O)C(=C(CS4)CSC5=NN=NN5C)C(=O)O,44187,https://www.rcsb.org/structure/5DF8,2016
+,WCK 4234,DBO (Diazabicyclooctane),"https://pmc.ncbi.nlm.nih.gov/articles/PMC8545096/#:~:text=aeruginosa%20PBP2%20and%20PBP3%20have,0.55%20and%200.49%20%C3%85%2C%20respectively.",C1CC(N2CC1N(C2=O)OS(=O)(=O)[O-])C#N.[Na+],C1C[C@H](N2C[C@@H]1N(C2=O)OS(=O)(=O)[O-])C#N.[Na+],71535518,https://www.rcsb.org/structure/7KIT,2021
+,Ceftobiprole,,"https://journals.asm.org/doi/full/10.1128/aac.00106-20#:~:text=aeruginosa%20penicillin%2Dbinding%20protein%203%20(PBP3).,and%20the%20catalytic%20residue%20S294.",C1CNCC1N2CCC(=CC3=C(N4C(C(C4=O)NC(=O)C(=NO)C5=NSC(=N5)N)SC3)C(=O)O)C2=O,C1CNC[C@@H]1N2CC/C(=C\C3=C(N4[C@@H]([C@@H](C4=O)NC(=O)/C(=N\O)/C5=NSC(=N5)N)SC3)C(=O)O)/C2=O,135413542,https://www.rcsb.org/structure/6VJE,2020
+,Aztreonam,,https://journals.asm.org/doi/10.1128/spectrum.03038-22,CC1C(C(=O)N1S(=O)(=O)O)NC(=O)C(=NOC(C)(C)C(=O)O)C2=CSC(=N2)N,C[C@H]1[C@@H](C(=O)N1S(=O)(=O)O)NC(=O)/C(=N\OC(C)(C)C(=O)O)/C2=CSC(=N2)N,5742832,https://www.rcsb.org/structure/3PBS,2010
+,Amdinocillin,,"""",CC1(C(N2C(S1)C(C2=O)N=CN3CCCCCC3)C(=O)O)C,CC1([C@@H](N2[C@H](S1)[C@@H](C2=O)N=CN3CCCCCC3)C(=O)O)C,36273,NA,
+,Vaborbactam,,https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0258359,B1(C(CCC(O1)CC(=O)O)NC(=O)CC2=CC=CS2)O,B1([C@H](CC[C@H](O1)CC(=O)O)NC(=O)CC2=CC=CS2)O,56649692,https://www.rcsb.org/structure/7LY1,2021
+,Ceftolozane,(in ceftolozane-tazobactam),https://pubmed.ncbi.nlm.nih.gov/34598422/,CC(C)(C(=O)O)ON=C(C1=NSC(=N1)N)C(=O)NC2C3N(C2=O)C(=C(CS3)C[N+]4=CC(=C(N4C)N)NC(=O)NCCN)C(=O)[O-],CC(C)(C(=O)O)O/N=C(/C1=NSC(=N1)N)\C(=O)N[C@H]2[C@@H]3N(C2=O)C(=C(CS3)C[N+]4=CC(=C(N4C)N)NC(=O)NCCN)C(=O)[O-],53234134,NA,
+,Amoxicillin,,,CC1(C(N2C(S1)C(C2=O)NC(=O)C(C3=CC=C(C=C3)O)N)C(=O)O)C,CC1([C@@H](N2[C@H](S1)[C@@H](C2=O)NC(=O)[C@@H](C3=CC=C(C=C3)O)N)C(=O)O)C,33613,https://www.rcsb.org/structure/6I1E,2019
+,,,,,,,,
+,,,,,,,,
+PBP3 (K. pneumoniae),Aztreonam,,https://journals.asm.org/doi/10.1128/aac.00282-18,CC1C(C(=O)N1S(=O)(=O)O)NC(=O)C(=NOC(C)(C)C(=O)O)C2=CSC(=N2)N,C[C@H]1[C@@H](C(=O)N1S(=O)(=O)O)NC(=O)/C(=N\OC(C)(C)C(=O)O)/C2=CSC(=N2)N,5742832,,
+,Ceftazidime,,"""",CC(C)(C(=O)O)ON=C(C1=CSC(=N1)N)C(=O)NC2C3N(C2=O)C(=C(CS3)C[N+]4=CC=CC=C4)C(=O)[O-],CC(C)(C(=O)O)O/N=C(/C1=CSC(=N1)N)\C(=O)N[C@H]2[C@@H]3N(C2=O)C(=C(CS3)C[N+]4=CC=CC=C4)C(=O)[O-],5481173,,
+,Cefepime,,"""",C[N+]1(CCCC1)CC2=C(N3C(C(C3=O)NC(=O)C(=NOC)C4=CSC(=N4)N)SC2)C(=O)[O-],C[N+]1(CCCC1)CC2=C(N3[C@@H]([C@@H](C3=O)NC(=O)/C(=N\OC)/C4=CSC(=N4)N)SC2)C(=O)[O-],5479537,,
+,Piperacillin,,"""",CCN1CCN(C(=O)C1=O)C(=O)NC(C2=CC=CC=C2)C(=O)NC3C4N(C3=O)C(C(S4)(C)C)C(=O)O,CCN1CCN(C(=O)C1=O)C(=O)N[C@H](C2=CC=CC=C2)C(=O)N[C@H]3[C@@H]4N(C3=O)[C@H](C(S4)(C)C)C(=O)O,43672,,
+,Meropenem,,"""",CC1C2C(C(=O)N2C(=C1SC3CC(NC3)C(=O)N(C)C)C(=O)O)C(C)O,C[C@@H]1[C@@H]2[C@H](C(=O)N2C(=C1S[C@H]3C[C@H](NC3)C(=O)N(C)C)C(=O)O)[C@@H](C)O,441130,,
+,Imipenem,Weaker,"""",CC(C1C2CC(=C(N2C1=O)C(=O)O)SCCN=CN)O,C[C@H]([C@@H]1[C@H]2CC(=C(N2C1=O)C(=O)O)SCCN=CN)O,104838,,
+,Biapenem,Weaker,"""",CC1C2C(C(=O)N2C(=C1SC3CN4C=NC=[N+]4C3)C(=O)[O-])C(C)O,C[C@@H]1[C@@H]2[C@H](C(=O)N2C(=C1SC3CN4C=NC=[N+]4C3)C(=O)[O-])[C@@H](C)O,71339,,
+,Doripenem,Weaker,"""",CC1C2C(C(=O)N2C(=C1SC3CC(NC3)CNS(=O)(=O)N)C(=O)O)C(C)O,C[C@@H]1[C@@H]2[C@H](C(=O)N2C(=C1S[C@H]3C[C@H](NC3)CNS(=O)(=O)N)C(=O)O)[C@@H](C)O,73303,,
+,Tazobactam,,"""",CC1(C(N2C(S1(=O)=O)CC2=O)C(=O)O)CN3C=CN=N3,C[C@@]1([C@@H](N2[C@H](S1(=O)=O)CC2=O)C(=O)O)CN3C=CN=N3,123630,,
+,Sulbactam,,"""",CC1(C(N2C(S1(=O)=O)CC2=O)C(=O)O)C,CC1([C@@H](N2[C@H](S1(=O)=O)CC2=O)C(=O)O)C,130313,,
+,Amoxicillin,,"""",CC1(C(N2C(S1)C(C2=O)NC(=O)C(C3=CC=C(C=C3)O)N)C(=O)O)C,CC1([C@@H](N2[C@H](S1)[C@@H](C2=O)NC(=O)[C@@H](C3=CC=C(C=C3)O)N)C(=O)O)C,33613,,
+,Avibactam,,"""",C1CC(N2CC1N(C2=O)OS(=O)(=O)O)C(=O)N,C1C[C@H](N2C[C@@H]1N(C2=O)OS(=O)(=O)O)C(=O)N,9835049,,
+,Vaborbactam,,,B1(C(CCC(O1)CC(=O)O)NC(=O)CC2=CC=CS2)O,B1([C@H](CC[C@H](O1)CC(=O)O)NC(=O)CC2=CC=CS2)O,56649692,,
+,Ceftriaxone,,,CN1C(=NC(=O)C(=O)N1)SCC2=C(N3C(C(C3=O)NC(=O)C(=NOC)C4=CSC(=N4)N)SC2)C(=O)O,CN1C(=NC(=O)C(=O)N1)SCC2=C(N3[C@@H]([C@@H](C3=O)NC(=O)/C(=N\OC)/C4=CSC(=N4)N)SC2)C(=O)O,5479530,,
+,Mezlocillin,,,CC1(C(N2C(S1)C(C2=O)NC(=O)C(C3=CC=CC=C3)NC(=O)N4CCN(C4=O)S(=O)(=O)C)C(=O)O)C,CC1([C@@H](N2[C@H](S1)[C@@H](C2=O)NC(=O)[C@@H](C3=CC=CC=C3)NC(=O)N4CCN(C4=O)S(=O)(=O)C)C(=O)O)C,656511,,
+,Oroxindin,,,COC1=C(C=C(C2=C1OC(=CC2=O)C3=CC=CC=C3)O)OC4C(C(C(C(O4)C(=O)O)O)O)O,COC1=C(C=C(C2=C1OC(=CC2=O)C3=CC=CC=C3)O)O[C@H]4[C@@H]([C@H]([C@@H]([C@H](O4)C(=O)O)O)O)O,3084961,,
+,,,,,,,,
+,,,,,,,,
+,,,,,,,,
+,,,,,,,,
+,,,,,,,,
+,,,,,,,,
+,,,,,,,,
+,,,,,,,,
+,,,,,,,,
+PBP1a (A. baumannii),benzyl penicillin,,https://www.rcsb.org/structure/3UE3,,,,,
+,Imipenem,,"""",,,,,
+,Aztreonam,,"""",,,,,
+,MC-1,,"""",,,,,
+,,,,,,,,
+,,,,,,,,
+,Benzylpenicillin (penicillin G),,,,,,,
+,Carbenicillin,,,,,,,
+,Azlocillin,,,,,,,
+,Piparicillin,,,,,,,
+,Mezlocillin,,,,,,,
+,Ticarcillin,,,,,,,
