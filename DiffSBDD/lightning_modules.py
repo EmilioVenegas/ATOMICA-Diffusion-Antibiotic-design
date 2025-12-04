@@ -68,7 +68,7 @@ class LigandPocketDDPM(pl.LightningModule):
                        'pocket_conditioning_simple': SimpleConditionalDDPM}
         assert mode in ddpm_models
         self.mode = mode
-        assert pocket_representation in {'CA', 'full-atom'}
+        assert pocket_representation in {'CA', 'full-atom', 'atomica'}
         self.pocket_representation = pocket_representation
 
         self.dataset_name = dataset

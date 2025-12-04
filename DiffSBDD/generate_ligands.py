@@ -45,8 +45,9 @@ if __name__ == "__main__":
     assert args.n_samples % args.batch_size == 0
 
     # Load model
+    # Pass pocket_representation if checkpoint requires it
     model = LigandPocketDDPM.load_from_checkpoint(
-        args.checkpoint, map_location=device)
+        args.checkpoint, map_location=device, pocket_representation='atomica')
     model = model.to(device)
 
     # Load ATOMICA model if needed
