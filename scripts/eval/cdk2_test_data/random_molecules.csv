@@ -1,0 +1,31 @@
+smiles,name
+CC(=O)OC1=CC=CC=C1C(=O)O,Aspirin
+CC(=O)NC1=CC=C(C=C1)O,Paracetamol
+CC(C)CC1=CC=C(C=C1)C(C)C(=O)O,Ibuprofen
+CN1C=NC2=C1C(=O)N(C(=O)N2C)C,Caffeine
+CCO,Ethanol
+C(C1C(C(C(C(O1)O)O)O)O)O,Glucose
+C1=CC=CC=C1,Benzene
+CC1=CC=CC=C1,Toluene
+CC(C)CCCC(C)C1CCC2C1(CCC3C2CC=C4C3(CCC(C4)O)C)C,Cholesterol
+CC12CCC3C(C1CCC2O)CCC4=CC(=O)CCC34C,Testosterone
+C1=CC(=C(C=C1CCN)O)O,Dopamine
+C1=CC2=C(C=C1O)C(=CN2)CCN,Serotonin
+CNC[C@H](C1=CC(=C(C=C1)O)O)O,Adrenaline
+C(C(C1C(=C(C(=O)O1)O)O)O)O,Ascorbic Acid
+CC1=C(C(CCC1)(C)C)C=CC(=CC=CC(=CC=CC=C(C)C=O)C)C,Retinal
+CC1=C(C(=C(C2=C1OC(CC2)(C)C)CCC(=C)CCC(=C)CCC(=C)C)C)O,Vitamin E
+CC1(C(N2C(S1)C(C2=O)NC(=O)CC3=CC=CC=C3)C(=O)O)C,Penicillin G
+CC1(C(N2C(S1)C(C2=O)NC(=O)C(C3=CC=CC=C3)N)C(=O)O)C,Ampicillin
+CN(C)C(=N)NC(=N)N,Metformin
+CC(C)C1=C(C(=C(N1CC[C@H](C[C@H](CC(=O)O)O)O)O)C2=CC=C(C=C2)F)C3=CC=CC=C3)C(=O)NC4=CC=CC=C4,Atorvastatin
+CC1=CN=C(C=C1OC)C(C)S(=O)C2=NC3=C(N2)C=C(C=C3)OC,Omeprazole
+CCCCC1=NC(=C(N1CC2=CC=C(C=C2)C3=CC=CC=C3N4N=NN=C4)Cl)CO,Losartan
+COC(=O)C1=C(C(=C(C(=C1)Cl)C(=O)OC)C)N,Nifedipine
+CC(C)NCC(COC1=CC=C(C=C1)CC(=O)N)O,Atenolol
+CCC(C)(C)C(=O)O[C@H]1C[C@@H](C=C2[C@H]1[C@H]([C@H](C=C2)C)CCC3=CC(=O)OC3)C,Simvastatin
+CC(C)(C)NCC(C1=CC(=C(C=C1)O)CO)O,Albuterol
+C1C(CC(CC1CC(=O)O)CC(=O)O)N,Gabapentin
+C1=CC(=C(C=C1S(=O)(=O)N)Cl)S(=O)(=O)NC2=CN=CC=C2,Chlorothiazide
+C1=CC=C(C=C1)CC2=C(C=CC(=C2)S(=O)(=O)N)N,Furosemide
+C1=CC(=CC(=C1)CC(C(=O)O)N)OC2=CC(=C(C(=C2)I)O)I,Levothyroxine
