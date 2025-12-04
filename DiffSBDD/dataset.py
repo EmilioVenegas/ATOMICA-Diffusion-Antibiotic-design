@@ -2,88 +2,49 @@ from itertools import accumulate
 import numpy as np
 import torch
 from torch.utils.data import Dataset
-# NEW: Import for loading .pt files
-import os
 
 
 class ProcessedLigandPocketDataset(Dataset):
-    def __init__(self, data_path, center=True, transform=None): # MODIFIED: data_path can be .npz or dir
+    def __init__(self, npz_path, center=True, transform=None):
 
         self.transform = transform
-        
-        # MODIFIED: Handle both .npz file (old) and directory of .pt files (new)
-        if os.path.isfile(data_path) and data_path.endswith('.npz'):
-            print(f"Loading data from NPZ file: {data_path}")
-            with np.load(data_path, allow_pickle=True) as f:
-                data = {key: val for key, val in f.items()}
-            
-            # --- Original NPZ loading logic ---
-            self.data = {}
-            for (k, v) in data.items():
-                if k == 'names' or k == 'receptors':
-                    self.data[k] = v
-                    continue
 
-                sections = np.where(np.diff(data['lig_mask']))[0] + 1 \
-                    if 'lig' in k \
-                    else np.where(np.diff(data['pocket_mask']))[0] + 1
-                self.data[k] = [torch.from_numpy(x) for x in np.split(v, sections)]
+        with np.load(npz_path, allow_pickle=True) as f:
+            data = {key: val for key, val in f.items()}
 
-                # add number of nodes for convenience
-                if k == 'lig_mask':
-                    self.data['num_lig_atoms'] = \
-                        torch.tensor([len(x) for x in self.data['lig_mask']])
-                elif k == 'pocket_mask':
-                    self.data['num_pocket_nodes'] = \
-                        torch.tensor([len(x) for x in self.data['pocket_mask']])
-            
-            # Manually add empty pocket_atomica_embeddings if loading old data
-            if 'pocket_atomica_embeddings' not in self.data:
-                print("Warning: 'pocket_atomica_embeddings' not found. Adding empty list.")
-                self.data['pocket_atomica_embeddings'] = [torch.empty(0) for _ in range(len(self.data['names']))]
-            
-            self.num_samples = len(self.data['names'])
-            
-        elif os.path.isdir(data_path):
-            print(f"Loading data from directory of .pt files: {data_path}")
-            self.data_files = sorted([os.path.join(data_path, f) for f in os.listdir(data_path) if f.endswith('.pt')])
-            self.num_samples = len(self.data_files)
-            print(f"Found {self.num_samples} processed .pt files.")
-            self.data_mode = 'pt'
-        
-        else:
-            raise FileNotFoundError(f"Data path not found or is not a .npz file or directory: {data_path}")
+        # split data based on mask
+        self.data = {}
+        for (k, v) in data.items():
+            if k == 'names' or k == 'receptors':
+                self.data[k] = v
+                continue
 
-        self.center = center # Centering will be applied in __getitem__ if needed
+            sections = np.where(np.diff(data['lig_mask']))[0] + 1 \
+                if 'lig' in k \
+                else np.where(np.diff(data['pocket_mask']))[0] + 1
+            self.data[k] = [torch.from_numpy(x) for x in np.split(v, sections)]
+
+            # add number of nodes for convenience
+            if k == 'lig_mask':
+                self.data['num_lig_atoms'] = \
+                    torch.tensor([len(x) for x in self.data['lig_mask']])
+            elif k == 'pocket_mask':
+                self.data['num_pocket_nodes'] = \
+                    torch.tensor([len(x) for x in self.data['pocket_mask']])
+
+        if center:
+            for i in range(len(self.data['lig_coords'])):
+                mean = (self.data['lig_coords'][i].sum(0) +
+                        self.data['pocket_coords'][i].sum(0)) / \
+                       (len(self.data['lig_coords'][i]) + len(self.data['pocket_coords'][i]))
+                self.data['lig_coords'][i] = self.data['lig_coords'][i] - mean
+                self.data['pocket_coords'][i] = self.data['pocket_coords'][i] - mean
 
     def __len__(self):
-        return self.num_samples # MODIFIED
+        return len(self.data['names'])
 
     def __getitem__(self, idx):
-        # MODIFIED: Load data based on mode
-        if hasattr(self, 'data_mode') and self.data_mode == 'pt':
-            data = torch.load(self.data_files[idx])
-            
-            # Create masks and sizes on the fly
-            data['lig_mask'] = torch.zeros(len(data['lig_coords'])) # Will be replaced by collate_fn
-            data['pocket_mask'] = torch.zeros(len(data['pocket_coords'])) # Will be replaced by collate_fn
-            data['num_lig_atoms'] = len(data['lig_coords'])
-            data['num_pocket_nodes'] = len(data['pocket_coords'])
-            
-            # Ensure compatibility with existing keys
-            # 'pocket_atomica_embeddings' is already loaded
-            # 'lig_one_hot' is already loaded
-
-        else: # Original .npz logic
-            data = {key: val[idx] for key, val in self.data.items()}
-
-        if self.center: # MODIFIED: Apply centering here
-            mean = (data['lig_coords'].sum(0) +
-                    data['pocket_coords'].sum(0)) / \
-                   (len(data['lig_coords']) + len(data['pocket_coords']))
-            data['lig_coords'] = data['lig_coords'] - mean
-            data['pocket_coords'] = data['pocket_coords'] - mean
-
+        data = {key: val[idx] for key, val in self.data.items()}
         if self.transform is not None:
             data = self.transform(data)
         return data
@@ -101,11 +62,66 @@ class ProcessedLigandPocketDataset(Dataset):
             elif 'mask' in prop:
                 # make sure indices in batch start at zero (needed for
                 # torch_scatter)
-                out[prop] = torch.cat([i * torch.ones(len(x[prop.replace('mask', 'coords')])) # MODIFIED: base mask on coords
-                                       for i, x in enumerate(batch)], dim=0).long() # MODIFIED: ensure long type
+                out[prop] = torch.cat([i * torch.ones(len(x[prop]))
+                                       for i, x in enumerate(batch)], dim=0)
             else:
-                # This will now correctly collate 'lig_coords', 'lig_one_hot',
-                # 'pocket_coords', and 'pocket_atomica_embeddings'
                 out[prop] = torch.cat([x[prop] for x in batch], dim=0)
 
         return out
+
+class LigandPocketDatasetPT(Dataset):
+    def __init__(self, data_dir, transform=None, center=True):
+        self.transform = transform
+        self.center = center
+        from pathlib import Path
+        self.data_dir = Path(data_dir)
+        self.files = sorted(list(self.data_dir.glob('*.pt')))
+        self.cache = {}
+        
+    def __len__(self):
+        return len(self.files)
+        
+    def __getitem__(self, idx):
+        if idx in self.cache:
+            data = self.cache[idx]
+        else:
+            data = torch.load(self.files[idx])
+            
+            # Add size info
+            data['num_lig_atoms'] = torch.tensor(data['lig_coords'].shape[0])
+            data['num_pocket_nodes'] = torch.tensor(data['pocket_coords'].shape[0])
+            
+            # Add masks (all zeros for single item, collate_fn will adjust)
+            data['lig_mask'] = torch.zeros(data['num_lig_atoms'], dtype=torch.long)
+            data['pocket_mask'] = torch.zeros(data['num_pocket_nodes'], dtype=torch.long)
+            
+            # Ensure types
+            data['lig_coords'] = data['lig_coords'].float()
+            data['pocket_coords'] = data['pocket_coords'].float()
+            data['lig_one_hot'] = data['lig_one_hot'].float()
+            data['pocket_one_hot'] = data['pocket_one_hot'].float()
+            
+            if 'pocket_atomica_embeddings' in data:
+                data['pocket_atomica_embeddings'] = data['pocket_atomica_embeddings'].float()
+
+            # Check CoM before centering
+            joint_coords = torch.cat([data['lig_coords'], data['pocket_coords']], dim=0)
+            com = joint_coords.mean(dim=0)
+            
+            if self.center:
+                # Force centering
+                data['lig_coords'] = data['lig_coords'] - com
+                data['pocket_coords'] = data['pocket_coords'] - com
+            elif com.norm() > 5.0:
+                print(f"Warning: Data {self.files[idx]} is far from origin (CoM: {com.numpy()}) but centering is disabled!")
+                
+            self.cache[idx] = data
+
+        if self.transform is not None:
+            data = self.transform(data)
+            
+        return data
+        
+    @staticmethod
+    def collate_fn(batch):
+        return ProcessedLigandPocketDataset.collate_fn(batch)

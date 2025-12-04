@@ -1,12 +1,5 @@
 from typing import Union, Iterable
-import json
-from argparse import Namespace
-try:
-    from ATOMICA.models.prediction_model import PredictionModel
-    from ATOMICA.models.pretrain_model import DenoisePretrainModel
-    from ATOMICA.models.prot_interface_model import ProteinInterfaceModel
-except ImportError:
-    print("Warning (from utils.py): Could not import ATOMICA modules.")
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -14,6 +7,8 @@ from rdkit import Chem
 import networkx as nx
 from networkx.algorithms import isomorphism
 from Bio.PDB.Polypeptide import is_aa
+from ATOMICA.data.pdb_utils import VOCAB
+from DiffSBDD.constants import atomica_atom_encoder, atomica_block_encoder
 
 
 class Queue():
@@ -142,7 +137,7 @@ def batch_to_list(data, batch_mask):
     # return data_list
 
     # make sure batch_mask is increasing
-    idx = torch.argsort(batch_mask)
+    idx = torch.argsort(batch_mask).to(data.device)
     batch_mask = batch_mask[idx]
     data = data[idx]
 
@@ -240,64 +235,99 @@ class AppendVirtualNodes:
 
         return data
 
-
-def format_atomica_batch(pocket_coords, pocket_atom_types, pocket_B_types, pocket_block_lengths, pocket_segment_ids, device):
-    """
-    Formats the raw pocket data into the batch dictionary
-    expected by the ATOMICA model's .infer() method.
-    """
-    # Get the total number of atoms and blocks if used in the future
-    num_atoms = len(pocket_coords)
-    num_blocks = len(pocket_B_types)
-    batch = {
-        'X': torch.tensor(pocket_coords, dtype=torch.float32).to(device),
-        'A': torch.tensor(pocket_atom_types, dtype=torch.long).to(device), # Atom types
-        'B': torch.tensor(pocket_B_types, dtype=torch.long).to(device), # Block types
-        'batch_id': torch.zeros(num_blocks, dtype=torch.long).to(device),
-        'block_lengths': torch.tensor(pocket_block_lengths, dtype=torch.long).to(device),
-        'lengths': torch.tensor([num_atoms], dtype=torch.long).to(device),
-        'segment_ids': torch.tensor(pocket_segment_ids, dtype=torch.long).to(device)
-    }
-    return batch
-
-#-----function from get_embeddings.py -----
 def load_atomica_model(args):
-    """
-    Loads the real ATOMICA model from checkpoint or config/weights,
-    based on the logic from get_embeddings.py.
-    """
-    model = None
-    if args.model_ckpt:
-        print(f"Loading model from checkpoint: {args.model_ckpt}")
-        model = torch.load(args.model_ckpt)
-        
-        if isinstance(model, ProteinInterfaceModel):
-            print("Model is ProteinInterfaceModel, extracting prot_model.")
-            model = model.prot_model
-        if isinstance(model, DenoisePretrainModel) and not isinstance(model, PredictionModel):
-            print("Model is DenoisePretrainModel, loading as PredictionModel from checkpoint.")
-            model = PredictionModel.load_from_pretrained(args.model_ckpt)
-            
-    elif args.model_config and args.model_weights:
-        print(f"Loading model from config: {args.model_config} and weights: {args.model_weights}")
-        with open(args.model_config, "r") as f:
-            model_config = json.load(f)
-        
-        model_type = model_config.get('model_type', 'PredictionModel') 
-        
-        if model_type == 'PredictionModel' or model_type == 'DenoisePretrainModel':
-            model = PredictionModel.load_from_config_and_weights(args.model_config, args.model_weights)
-        elif model_type == 'ProteinInterfaceModel':
-            model = ProteinInterfaceModel.load_from_config_and_weights(args.model_config, args.model_weights)
-            print("Model is ProteinInterfaceModel, extracting prot_model.")
-            model = model.prot_model
-        else:
-            raise NotImplementedError(f"Model type {model_type} not implemented in loading logic.")
-            
+    from ATOMICA.models.pretrain_model import DenoisePretrainModel
+    
+    config_path = args.model_config
+    # Support both model_weights and model_ckpt attribute names
+    if hasattr(args, 'model_weights') and args.model_weights:
+        weights_path = args.model_weights
+    elif hasattr(args, 'model_ckpt') and args.model_ckpt:
+        weights_path = args.model_ckpt
     else:
-        raise ValueError("You must provide either --model_ckpt or both --model_config and --model_weights.")
-
-    if model is None:
-        raise ValueError("Model could not be loaded. Check paths and arguments.")
+        raise ValueError("args must provide model_weights or model_ckpt")
         
-    return model
+    return DenoisePretrainModel.load_from_config_and_weights(config_path, weights_path)
+
+def format_atomica_batch(coords, atom_types, block_types, block_lengths, segment_ids, device):
+    Z = torch.from_numpy(coords).float().to(device)
+    A = torch.from_numpy(atom_types).long().to(device)
+    B = torch.from_numpy(block_types).long().to(device)
+    block_lengths = torch.from_numpy(block_lengths).long().to(device)
+    segment_ids = torch.from_numpy(segment_ids).long().to(device)
+    lengths = torch.tensor([len(block_lengths)], device=device).long()
+    
+    return {
+        'X': Z,
+        'B': B,
+        'A': A,
+        'block_lengths': block_lengths,
+        'lengths': lengths,
+        'segment_ids': segment_ids
+    }
+
+
+def get_atomica_embeddings(biopython_residues, atomica_model, device, pocket_type_encoder):
+    
+    atom_list = [a for res in biopython_residues for a in res.get_atoms()]
+    
+    atomica_input_indices = []
+    atomica_coords = []
+    atom_objects = [] 
+    
+    for atom in atom_list:
+        symbol = atom.element.capitalize()
+        if symbol in atomica_atom_encoder:
+            atomica_input_indices.append(atomica_atom_encoder[symbol])
+            atomica_coords.append(atom.get_coord())
+            atom_objects.append(atom)
+            
+    if not atomica_input_indices:
+        return None
+        
+    # Prepare ATOMICA batch
+    pocket_coords = np.array(atomica_coords)
+    pocket_atomica_types = np.array(atomica_input_indices, dtype=np.int64)
+    
+    # Compute global node position as center of mass
+    global_pos = np.mean(pocket_coords, axis=0)
+    
+    # Prepend global atom
+    pocket_coords_with_global = np.vstack([global_pos, pocket_coords])
+    global_atom_idx = VOCAB.get_atom_global_idx()
+    pocket_atomica_types_with_global = np.concatenate([[global_atom_idx], pocket_atomica_types])
+    
+    # Create block structure
+    global_block_idx = VOCAB.symbol_to_idx(VOCAB.GLB)
+    pocket_B_types = np.array([global_block_idx, atomica_block_encoder.get('UNK', 21)], dtype=np.int64)
+    pocket_block_lengths = np.array([1, len(pocket_atomica_types)], dtype=np.int64)
+    pocket_segment_ids = np.array([0, 0], dtype=np.int64)
+    
+    atomica_batch = format_atomica_batch(
+        pocket_coords_with_global, pocket_atomica_types_with_global,
+        pocket_B_types, pocket_block_lengths,
+        pocket_segment_ids, device
+    )
+    
+    with torch.no_grad():
+        atomica_output = atomica_model.infer(atomica_batch)
+    
+    embeddings = atomica_output.unit_repr.cpu() # (N_atoms + 1, 32)
+    
+    atom_to_embedding = {}
+    for i, atom in enumerate(atom_objects):
+        atom_to_embedding[atom] = embeddings[i+1] # Skip global
+        
+    pocket_embeddings_list = []
+    
+    # Replicate prepare_pocket loop to match atoms
+    for res in biopython_residues:
+        for a in res.get_atoms():
+            if (a.element.capitalize() in pocket_type_encoder or a.element != 'H'):
+                if a in atom_to_embedding:
+                    pocket_embeddings_list.append(atom_to_embedding[a])
+                else:
+                    pocket_embeddings_list.append(torch.zeros(embeddings.shape[1]))
+                    
+    return torch.stack(pocket_embeddings_list).to(device)
+

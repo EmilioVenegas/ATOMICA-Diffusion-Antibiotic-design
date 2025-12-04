@@ -1,4 +1,3 @@
-#keep
 import math
 
 import numpy as np
@@ -111,14 +110,15 @@ class ConditionalDDPM(EnVariationalDiffusion):
         return log_p_x_given_z0_without_constants_ligand, log_ph_given_z0_ligand
 
     def sample_p_xh_given_z0(self, z0_lig, xh0_pocket, lig_mask, pocket_mask,
-                             batch_size, fix_noise=False):
+                             batch_size, fix_noise=False, **kwargs):
         """Samples x ~ p(x|z0)."""
         t_zeros = torch.zeros(size=(batch_size, 1), device=z0_lig.device)
         gamma_0 = self.gamma(t_zeros)
         # Computes sqrt(sigma_0^2 / alpha_0^2)
         sigma_x = self.SNR(-0.5 * gamma_0)
+        h_atomica = kwargs.get('h_atomica')
         net_out_lig, _ = self.dynamics(
-            z0_lig, xh0_pocket, t_zeros, lig_mask, pocket_mask)
+            z0_lig, xh0_pocket, t_zeros, lig_mask, pocket_mask, h_atomica=h_atomica)
 
         # Compute mu for p(zs | zt).
         mu_x_lig = self.compute_x_pred(net_out_lig, z0_lig, gamma_0, lig_mask)
@@ -167,33 +167,14 @@ class ConditionalDDPM(EnVariationalDiffusion):
         sigma_t = self.sigma(gamma_t, xh_lig)
 
         # Sample zt ~ Normal(alpha_t x, sigma_t)
-        # 1. Sample standard Gaussian noise for x and h separately
-        eps_lig_x_uncen = self.sample_gaussian(
-            size=(len(lig_mask), self.n_dims),
+        eps_lig = self.sample_gaussian(
+            size=(len(lig_mask), self.n_dims + self.atom_nf),
             device=lig_mask.device)
-        eps_lig_h = self.sample_gaussian(
-            size=(len(lig_mask), self.atom_nf),
-            device=lig_mask.device)
-
-        # 2. Center the x-component of the noise using the specific
-        #    ligand-centering logic of ConditionalDDPM.
-        # We pass a dummy pocket tensor which will be translated and discarded.
-        dummy_pocket_x = torch.zeros_like(xh0_pocket[:, :self.n_dims])
-        eps_lig_x, _ = self.remove_mean_batch(
-            eps_lig_x_uncen, dummy_pocket_x, lig_mask, pocket_mask
-        )
-        
-        # 3. Combine the centered x-noise and standard h-noise
-        eps_lig = torch.cat([eps_lig_x, eps_lig_h], dim=1)
 
         # Sample z_t given x, h for timestep t, from q(z_t | x, h)
-        # --- DEBUG PRINTS ---
-        #print(f"DEBUG: alpha_t[lig_mask] shape: {alpha_t[lig_mask].shape}")
-        #print(f"DEBUG: xh_lig shape: {xh_lig.shape}")
-        #print(f"DEBUG: sigma_t[lig_mask] shape: {sigma_t[lig_mask].shape}")
-        #print(f"DEBUG: eps_lig shape: {eps_lig.shape}")
-        # --- END DEBUG ---
-        z_t_lig = alpha_t[lig_mask] * xh_lig + sigma_t[lig_mask] * eps_lig # Line 175
+        z_t_lig = alpha_t[lig_mask] * xh_lig + sigma_t[lig_mask] * eps_lig
+
+        # project to COM-free subspace
         xh_pocket = xh0_pocket.detach().clone()
         z_t_lig[:, :self.n_dims], xh_pocket[:, :self.n_dims] = \
             self.remove_mean_batch(z_t_lig[:, :self.n_dims],
@@ -270,8 +251,9 @@ class ConditionalDDPM(EnVariationalDiffusion):
                                        pocket['mask'], gamma_t)
 
         # Neural net prediction.
+        h_atomica = pocket.get('atomica_embeddings')
         net_out_lig, _ = self.dynamics(
-            z_t_lig, xh_pocket, t, ligand['mask'], pocket['mask'])
+            z_t_lig, xh_pocket, t, ligand['mask'], pocket['mask'], h_atomica=h_atomica)
 
         # For LJ loss term
         # xh_lig_hat does not need to be zero-centered as it is only used for
@@ -324,7 +306,7 @@ class ConditionalDDPM(EnVariationalDiffusion):
                                            pocket['mask'], gamma_0)
 
             net_out_0_lig, _ = self.dynamics(
-                z_0_lig, xh_pocket, t_zeros, ligand['mask'], pocket['mask'])
+                z_0_lig, xh_pocket, t_zeros, ligand['mask'], pocket['mask'], h_atomica=h_atomica)
 
             log_p_x_given_z0_without_constants_ligand, log_ph_given_z0 = \
                 self.log_pxh_given_z0_without_constants(
@@ -450,8 +432,10 @@ class ConditionalDDPM(EnVariationalDiffusion):
         return zt_lig, xh0_pocket
 
     def sample_p_zs_given_zt(self, s, t, zt_lig, xh0_pocket, ligand_mask,
-                             pocket_mask, fix_noise=False):
-        """Samples from zs ~ p(zs | zt). Only used during sampling."""
+                             pocket_mask, fix_noise=False, guidance_config=None, h_atomica=None):
+        """Samples from zs ~ p(zs | zt) with Semantic Guidance."""
+        
+        # 1. Standard DiffSBDD Denoising Steps (Existing Code)
         gamma_s = self.gamma(s)
         gamma_t = self.gamma(t)
 
@@ -461,21 +445,70 @@ class ConditionalDDPM(EnVariationalDiffusion):
         sigma_s = self.sigma(gamma_s, target_tensor=zt_lig)
         sigma_t = self.sigma(gamma_t, target_tensor=zt_lig)
 
-        # Neural net prediction.
         eps_t_lig, _ = self.dynamics(
-            zt_lig, xh0_pocket, t, ligand_mask, pocket_mask)
+            zt_lig, xh0_pocket, t, ligand_mask, pocket_mask, h_atomica=h_atomica)
 
-        # Compute mu for p(zs | zt).
-        # Note: mu_{t->s} = 1 / alpha_{t|s} z_t - sigma_{t|s}^2 / sigma_t / alpha_{t|s} epsilon
-        # follows from the definition of mu_{t->s} and Equ. (7) in the EDM paper
+        # Compute standard mean (mu)
         mu_lig = zt_lig / alpha_t_given_s[ligand_mask] - \
                  (sigma2_t_given_s / alpha_t_given_s / sigma_t)[ligand_mask] * \
                  eps_t_lig
 
-        # Compute sigma for p(zs | zt).
+        # Compute standard sigma
         sigma = sigma_t_given_s * sigma_s / sigma_t
 
-        # Sample zs given the parameters derived from zt.
+        # -----------------------------------------------------------
+        # 2. Semantic Guidance Injection
+        # -----------------------------------------------------------
+        if guidance_config is not None and guidance_config.get('enabled', False):
+            guidance_model = guidance_config['model']
+            guidance_scale = guidance_config['scale']  # Strength (e.g., 10.0 or 100.0)
+            target_label = guidance_config['target']   # e.g., 1.0 for "active"
+            
+            # Enable gradients specifically for the guidance calculation
+            with torch.enable_grad():
+                # Isolate the coordinate part of the noisy ligand
+                x_t = zt_lig[:, :self.n_dims].detach().clone()
+                x_t.requires_grad = True
+                
+                # The atom types (h) are discrete/fixed in this formulation, 
+                # so we take them from zt_lig without gradients
+                h_t = zt_lig[:, self.n_dims:].detach()
+                
+                # Forward pass through the Semantic Head
+                # We aim to maximize probability of target_label
+                # For regression: minimize (pred - target)^2
+                # For classification (logits): maximize logit for class 1
+                
+                pred = guidance_model(x_t, h_t, ligand_mask)
+                
+                # Define Loss to minimize
+                # Example: We want prediction to be high (active)
+                # We calculate gradient of the Output w.r.t Input Coordinates
+                
+                if guidance_config['type'] == 'classifier':
+                     # maximize probability of class 1 -> minimize -logit
+                     guidance_loss = -1 * pred.sum() 
+                elif guidance_config['type'] == 'regressor':
+                     # minimize MSE to target
+                     guidance_loss = ((pred - target_label) ** 2).sum()
+                
+                # Calculate Gradient: ∇_x Loss
+                grad_x = torch.autograd.grad(guidance_loss, x_t)[0]
+                
+                # Apply Guidance
+                # Formula: mu' = mu - scale * variance * grad_x
+                # (Note signs: we move opposing the gradient of the loss)
+                
+                # We assume grad_x has shape [Total_Atoms, 3]
+                # Sigma is scalar or shape [Total_Atoms, 1]
+                var_t = sigma[ligand_mask].pow(2)
+                
+                # Update the coordinate part of mu
+                mu_lig[:, :self.n_dims] = mu_lig[:, :self.n_dims] - (guidance_scale * var_t * grad_x)
+
+        # -----------------------------------------------------------
+        # 3. Sampling (Existing Code)
+        # -----------------------------------------------------------
         zs_lig, xh0_pocket = self.sample_normal_zero_com(
             mu_lig, xh0_pocket, sigma, ligand_mask, pocket_mask, fix_noise)
 
@@ -543,7 +576,9 @@ class ConditionalDDPM(EnVariationalDiffusion):
             t_array = t_array / timesteps
 
             z_lig, xh_pocket = self.sample_p_zs_given_zt(
-                s_array, t_array, z_lig, xh_pocket, lig_mask, pocket['mask'])
+                s_array, t_array, z_lig, xh_pocket, lig_mask, pocket['mask'],
+                h_atomica=pocket.get('atomica_embeddings')
+            )
 
             # save frame
             if (s * return_frames) % timesteps == 0:
@@ -553,7 +588,7 @@ class ConditionalDDPM(EnVariationalDiffusion):
 
         # Finally sample p(x, h | z_0).
         x_lig, h_lig, x_pocket, h_pocket = self.sample_p_xh_given_z0(
-            z_lig, xh_pocket, lig_mask, pocket['mask'], n_samples)
+            z_lig, xh_pocket, lig_mask, pocket['mask'], n_samples, h_atomica=pocket.get("atomica_embeddings"))
 
         self.assert_mean_zero_with_mask(x_lig, lig_mask)
 
@@ -651,7 +686,7 @@ class ConditionalDDPM(EnVariationalDiffusion):
                 # sample inpainted part
                 z_lig_unknown, xh_pocket = self.sample_p_zs_given_zt(
                     s_array, t_array, z_lig, xh_pocket, ligand['mask'],
-                    pocket['mask'])
+                    pocket['mask'], h_atomica=pocket.get('atomica_embeddings'))
 
                 # sample known nodes from the input
                 com_pocket = scatter_mean(xh_pocket[:, :self.n_dims],
@@ -695,7 +730,7 @@ class ConditionalDDPM(EnVariationalDiffusion):
 
         # Finally sample p(x, h | z_0).
         x_lig, h_lig, x_pocket, h_pocket = self.sample_p_xh_given_z0(
-            z_lig, xh_pocket, ligand['mask'], pocket['mask'], n_samples)
+            z_lig, xh_pocket, ligand['mask'], pocket['mask'], n_samples, h_atomica=pocket.get('atomica_embeddings'))
 
         # Overwrite last frame with the resulting x and h.
         out_lig[0] = torch.cat([x_lig, h_lig], dim=1)
@@ -710,6 +745,12 @@ class ConditionalDDPM(EnVariationalDiffusion):
 
         # Just subtract the center of mass of the sampled part
         mean = scatter_mean(x_lig, lig_indices, dim=0)
+        
+        # Debug: Check if mean is large
+        if mean.abs().max() > 1.0:
+            # Only print once per batch or if very large to avoid spam, but for now print if large
+            # print(f"Info: remove_mean_batch centering data. Mean max abs: {mean.abs().max().item():.3f}")
+            pass
 
         x_lig = x_lig - mean[lig_indices]
         x_pocket = x_pocket - mean[pocket_indices]

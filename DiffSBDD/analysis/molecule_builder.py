@@ -5,7 +5,7 @@ import torch
 import numpy as np
 from rdkit import Chem
 from rdkit.Chem.rdForceFieldHelpers import UFFOptimizeMolecule, UFFHasAllMoleculeParams
-import openbabel
+from openbabel import openbabel
 
 import utils
 from constants import bonds1, bonds2, bonds3, margin1, margin2, margin3, \
@@ -83,7 +83,17 @@ def make_mol_openbabel(positions, atom_types, atom_decoder):
         obConversion.WriteFile(ob_mol, tmp_file)
 
         # Read sdf file with RDKit
-        tmp_mol = Chem.SDMolSupplier(tmp_file, sanitize=False)[0]
+        try:
+            tmp_mol = Chem.SDMolSupplier(tmp_file, sanitize=False)[0]
+            if tmp_mol:
+                tmp_mol.UpdatePropertyCache(strict=False)
+        except Exception as e:
+            print(f"RDKit failed to read SDF from OpenBabel: {e}")
+            return None
+
+    if tmp_mol is None:
+        print("RDKit returned None for SDF")
+        return None
 
     # Build new molecule. This is a workaround to remove radicals.
     mol = Chem.RWMol()
@@ -94,6 +104,16 @@ def make_mol_openbabel(positions, atom_types, atom_decoder):
     for bond in tmp_mol.GetBonds():
         mol.AddBond(bond.GetBeginAtomIdx(), bond.GetEndAtomIdx(),
                     bond.GetBondType())
+
+    try:
+        Chem.SanitizeMol(mol)
+    except Exception as e:
+        print(f"Sanitization failed: {e}")
+        try:
+            # Try without kekulization if that was the issue
+            Chem.SanitizeMol(mol, sanitizeOps=Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_KEKULIZE)
+        except Exception as e2:
+             print(f"Partial sanitization failed: {e2}")
 
     return mol
 

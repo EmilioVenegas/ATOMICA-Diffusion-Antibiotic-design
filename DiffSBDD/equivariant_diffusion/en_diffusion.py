@@ -1,5 +1,3 @@
-#keep
-
 import math
 from typing import Dict
 
@@ -956,132 +954,78 @@ class EnVariationalDiffusion(nn.Module):
         x = torch.randn(size, device=device)
         return x
 
-class DistributionNodes(object):
+
+class DistributionNodes:
     def __init__(self, histogram):
+
         histogram = torch.tensor(histogram).float()
         histogram = histogram + 1e-3  # for numerical stability
-        self.prob = histogram / histogram.sum()
 
+        prob = histogram / histogram.sum()
+
+        self.idx_to_n_nodes = torch.tensor(
+            [[(i, j) for j in range(prob.shape[1])] for i in range(prob.shape[0])]
+        ).view(-1, 2)
+
+        self.n_nodes_to_idx = {tuple(x.tolist()): i
+                               for i, x in enumerate(self.idx_to_n_nodes)}
+
+        self.prob = prob
         self.m = torch.distributions.Categorical(self.prob.view(-1),
                                                  validate_args=True)
 
-        # ---  FIX: Handle both 1D and 2D histograms ---
-        if len(self.prob.shape) == 1:
-            # 1D Histogram (e.g., atomica, only ligand nodes)
-            self.is_2d = False
-            self.idx_to_n_nodes = torch.tensor(
-                [(i,) for i in range(self.prob.shape[0])]
-            ).view(-1, 1)
+        self.n1_given_n2 = \
+            [torch.distributions.Categorical(prob[:, j], validate_args=True)
+             for j in range(prob.shape[1])]
+        self.n2_given_n1 = \
+            [torch.distributions.Categorical(prob[i, :], validate_args=True)
+             for i in range(prob.shape[0])]
 
-            self.n_nodes_to_idx = {tuple(x.tolist()): i
-                                   for i, x in enumerate(self.idx_to_n_nodes)}
-            
-            # Conditional sampling is not defined for 1D, but create placeholders
-            self.n1_given_n2 = [torch.distributions.Categorical(self.prob, validate_args=True)]
-            self.n2_given_n1 = [torch.distributions.Categorical(self.prob, validate_args=True)]
-
-        else:
-            # 2D Histogram (e.g., crossdock, joint ligand/pocket nodes)
-            self.is_2d = True
-            self.idx_to_n_nodes = torch.tensor(
-                [[(i, j) for j in range(self.prob.shape[1])] for i in range(self.prob.shape[0])]
-            ).view(-1, 2)
-
-            self.n_nodes_to_idx = {tuple(x.tolist()): i
-                                   for i, x in enumerate(self.idx_to_n_nodes)}
-
-            self.n1_given_n2 = \
-                [torch.distributions.Categorical(self.prob[:, j], validate_args=True)
-                 for j in range(self.prob.shape[1])]
-            self.n2_given_n1 = \
-                [torch.distributions.Categorical(self.prob[i, :], validate_args=True)
-                 for i in range(self.prob.shape[0])]
-        # --- End Fix ---
+        # entropy = -torch.sum(self.prob.view(-1) * torch.log(self.prob.view(-1) + 1e-30))
+        entropy = self.m.entropy()
+        print("Entropy of n_nodes: H[N]", entropy.item())
 
     def sample(self, n_samples=1):
         idx = self.m.sample((n_samples,))
-        n_nodes = self.idx_to_n_nodes[idx]
-        return n_nodes
+        num_nodes_lig, num_nodes_pocket = self.idx_to_n_nodes[idx].T
+        return num_nodes_lig, num_nodes_pocket
 
-    def sample_conditional(self, n1=None, n2=None, n_samples=1):
-        # --- FIX: Handle 1D case ---
-        if not self.is_2d:
-            # For 1D, we can only sample unconditionally.
-            # This is called by ConditionalDDPM, but it only needs n1 (ligand nodes).
-            # We ignore n2 and return samples for n1.
-            return self.sample(n_samples)
-        # --- End Fix ---
-            
-        assert (n1 is None) ^ (n2 is None)
-        if n2 is not None:
-            # n2 is a tensor of pocket node counts
-            # We sample n1 (ligand nodes) given n2
-            n1 = self.n1_given_n2[n2].sample()
-            n_nodes = torch.stack((n1, n2.to(n1.device)), dim=1)
-        else:
-            # n1 is a tensor of ligand node counts
-            # We sample n2 (pocket nodes) given n1
-            n2 = self.n2_given_n1[n1].sample()
-            n_nodes = torch.stack((n1.to(n2.device), n2), dim=1)
-        return n_nodes
+    def sample_conditional(self, n1=None, n2=None):
+        assert (n1 is None) ^ (n2 is None), \
+            "Exactly one input argument must be None"
 
+        m = self.n1_given_n2 if n2 is not None else self.n2_given_n1
+        c = n2 if n2 is not None else n1
+
+        return torch.tensor([m[i].sample() for i in c], device=c.device)
 
     def log_prob(self, batch_n_nodes_1, batch_n_nodes_2):
         assert len(batch_n_nodes_1.size()) == 1
         assert len(batch_n_nodes_2.size()) == 1
 
-        if not self.is_2d:
-            # 1D case: use n1 (ligand nodes) only
-            try:
-                idx = torch.tensor(
-                    [self.n_nodes_to_idx[(n1,)]
-                     for n1 in batch_n_nodes_1.tolist()], device=batch_n_nodes_1.device
-                )
-            except KeyError as e:
-                print(f"Error: Node count {e} not in 1D n_nodes_to_idx histogram (log_prob).")
-                raise e
-        else:
-            # 2D case
-            try:
-                idx = torch.tensor(
-                    [self.n_nodes_to_idx[(n1, n2)]
-                     for n1, n2 in zip(batch_n_nodes_1.tolist(), batch_n_nodes_2.tolist())],
-                    device=batch_n_nodes_1.device
-                )
-            except KeyError as e:
-                print(f"Error: Node counts {(e,)} not in 2D n_nodes_to_idx histogram (log_prob).")
-                raise e
+        idx = torch.tensor(
+            [self.n_nodes_to_idx[(n1, n2)]
+             for n1, n2 in zip(batch_n_nodes_1.tolist(), batch_n_nodes_2.tolist())]
+        )
 
-        log_probs = self.m.log_prob(idx.to(self.m.logits.device))
+        # log_probs = torch.log(self.prob.view(-1)[idx] + 1e-30)
+        log_probs = self.m.log_prob(idx)
 
         return log_probs.to(batch_n_nodes_1.device)
 
     def log_prob_n1_given_n2(self, n1, n2):
         assert len(n1.size()) == 1
         assert len(n2.size()) == 1
-
-        if not self.is_2d:
-            # 1D case: p(n1 | n2) = p(n1). We ignore n2.
-            # We need to get the indices from the n1 counts.
-            try:
-                idx = torch.tensor(
-                    [self.n_nodes_to_idx[(c,)]
-                     for c in n1.tolist()], device=n1.device
-                )
-            except KeyError as e:
-                print(f"Error: Node count {e} not in 1D n_nodes_to_idx histogram (log_prob_n1_given_n2).")
-                raise e
-            log_probs = self.m.log_prob(idx.to(self.m.logits.device))
-        else:
-            # Original 2D logic
-            if n2.max() >= len(self.n1_given_n2) or n2.min() < 0:
-                 raise IndexError(f"Error: n2 (pocket node count) value out of range. "
-                                  f"Max n2: {n2.max()}, min n2: {n2.min()}, "
-                                  f"size of n1_given_n2: {len(self.n1_given_n2)}")
-            log_probs = torch.stack([self.n1_given_n2[c].log_prob(i.cpu())
-                                     for i, c in zip(n1, n2)])
-        
+        log_probs = torch.stack([self.n1_given_n2[c].log_prob(i.cpu())
+                                 for i, c in zip(n1, n2)])
         return log_probs.to(n1.device)
+
+    def log_prob_n2_given_n1(self, n2, n1):
+        assert len(n2.size()) == 1
+        assert len(n1.size()) == 1
+        log_probs = torch.stack([self.n2_given_n1[c].log_prob(i.cpu())
+                                 for i, c in zip(n2, n1)])
+        return log_probs.to(n2.device)
 
 
 class PositiveLinear(torch.nn.Module):

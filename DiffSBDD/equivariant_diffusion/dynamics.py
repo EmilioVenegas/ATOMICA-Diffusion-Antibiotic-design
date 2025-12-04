@@ -1,11 +1,63 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from equivariant_diffusion.egnn_new import EGNN, GNN, SE3CrossAttention
+from equivariant_diffusion.egnn_new import EGNN, GNN
 from equivariant_diffusion.en_diffusion import EnVariationalDiffusion
 remove_mean_batch = EnVariationalDiffusion.remove_mean_batch
 import numpy as np
 
+
+class SE3EquivariantCrossAttention(nn.Module):
+    def __init__(self, ligand_nf, pocket_nf, hidden_nf=64, act_fn=nn.SiLU()):
+        super().__init__()
+        self.q_proj = nn.Linear(ligand_nf, hidden_nf)
+        self.k_proj = nn.Linear(pocket_nf, hidden_nf)
+        self.v_proj = nn.Linear(pocket_nf, hidden_nf)
+        self.out_proj = nn.Linear(hidden_nf, ligand_nf)
+        self.scale = hidden_nf ** -0.5
+        
+        # Internal projections
+        nn.init.xavier_uniform_(self.q_proj.weight, gain=0.1)
+        nn.init.xavier_uniform_(self.k_proj.weight, gain=0.1)
+        nn.init.xavier_uniform_(self.v_proj.weight, gain=0.1)
+        
+        # Zero init output
+        nn.init.zeros_(self.out_proj.weight)
+        nn.init.zeros_(self.out_proj.bias)
+
+    # REMOVED: x_l and x_p from arguments
+    def forward(self, h_l, h_p, mask_l, mask_p):
+        # 1. Check Embeddings for NaNs
+        if torch.isnan(h_l).any(): h_l = torch.nan_to_num(h_l)
+        if torch.isnan(h_p).any(): h_p = torch.nan_to_num(h_p)
+
+        # 2. Projections
+        q = self.q_proj(h_l)
+        k = self.k_proj(h_p)
+        v = self.v_proj(h_p)
+
+        # 3. Attention Scores
+        batch_mask = mask_l[:, None] == mask_p[None, :]
+        scores = torch.matmul(q, k.transpose(-1, -2)) * self.scale
+        scores = torch.clamp(scores, min=-100, max=100)
+        scores = scores.masked_fill(~batch_mask, -1e4)
+        attn = F.softmax(scores, dim=1)
+
+        # Clean up Softmax NaNs
+        if torch.isnan(attn).any():
+            attn = torch.nan_to_num(attn, nan=0.0)
+        attn = attn * batch_mask.float()
+
+        # 4. Feature Updates Only
+        h_update_internal = torch.matmul(attn, v)
+        h_update = self.out_proj(h_update_internal)
+
+        # REMOVED: Coordinate calculation (center_p, vel)
+        
+        if torch.isnan(h_update).any():
+            h_update = torch.nan_to_num(h_update)
+
+        return h_update
 
 class EGNNDynamics(nn.Module):
     def __init__(self, atom_nf, residue_nf,
@@ -16,13 +68,32 @@ class EGNNDynamics(nn.Module):
                  normalization_factor=100, aggregation_method='sum',
                  update_pocket_coords=True, edge_cutoff_ligand=None,
                  edge_cutoff_pocket=None, edge_cutoff_interaction=None,
-                 reflection_equivariant=True, edge_embedding_dim=None):
+                 reflection_equivariant=True, edge_embedding_dim=None,
+                 atomica_nf=None):
         super().__init__()
         self.mode = mode
         self.edge_cutoff_l = edge_cutoff_ligand
         self.edge_cutoff_p = edge_cutoff_pocket
         self.edge_cutoff_i = edge_cutoff_interaction
         self.edge_nf = edge_embedding_dim
+        self.atomica_nf = atomica_nf
+
+        if atomica_nf:  # Only create cross_attn if atomica_nf > 0
+            # Add LayerNorm for stabilizing attention (with epsilon for numerical stability)
+            self.atomica_norm = nn.LayerNorm(atomica_nf, eps=1e-6)
+
+            self.cross_attn = SE3EquivariantCrossAttention(
+                ligand_nf=joint_nf,
+                pocket_nf=atomica_nf,
+                hidden_nf=hidden_nf,
+                act_fn=act_fn
+            )
+            
+            # Scale factor to reduce adapter contribution (prevents gradient explosion)
+            self.adapter_scale = 0.1
+        else:
+            self.atomica_norm = None
+            self.cross_attn = None
 
         self.atom_encoder = nn.Sequential(
             nn.Linear(atom_nf, 2 * atom_nf),
@@ -84,7 +155,7 @@ class EGNNDynamics(nn.Module):
         self.n_dims = n_dims
         self.condition_time = condition_time
 
-    def forward(self, xh_atoms, xh_residues, t, mask_atoms, mask_residues):
+    def forward(self, xh_atoms, xh_residues, t, mask_atoms, mask_residues, h_atomica=None):
 
         x_atoms = xh_atoms[:, :self.n_dims].clone()
         h_atoms = xh_atoms[:, self.n_dims:].clone()
@@ -95,6 +166,47 @@ class EGNNDynamics(nn.Module):
         # embed atom features and residue features in a shared space
         h_atoms = self.atom_encoder(h_atoms)
         h_residues = self.residue_encoder(h_residues)
+
+        # Semantically-Guided Adapter
+        vel_adapter = 0.0
+        if self.cross_attn is not None and h_atomica is not None:
+            # Check for NaN/Inf in input embeddings
+            if torch.isnan(h_atomica).any() or torch.isinf(h_atomica).any():
+                print(f"WARNING: NaN/Inf in h_atomica before normalization")
+                h_atomica = torch.nan_to_num(h_atomica, nan=0.0, posinf=1e4, neginf=-1e4)
+
+            # Normalize ATOMICA embeddings for attention stability
+            # Safe LayerNorm: Check for zero-variance (padding) vectors
+            if self.cross_attn is not None and h_atomica is not None:
+                # Handle NaNs in input
+                h_atomica = torch.nan_to_num(h_atomica)
+                
+                # Apply Norm
+                h_atomica_norm = self.atomica_norm(h_atomica)
+                
+                # FIX: If LayerNorm produced NaNs (due to 0-variance inputs), replace them
+                if torch.isnan(h_atomica_norm).any():
+                    h_atomica_norm = torch.nan_to_num(h_atomica_norm)
+            
+            # Check after normalization
+            if torch.isnan(h_atomica_norm).any() or torch.isinf(h_atomica_norm).any():
+                print(f"WARNING: NaN/Inf in h_atomica after normalization")
+                h_atomica_norm = torch.nan_to_num(h_atomica_norm, nan=0.0, posinf=1e4, neginf=-1e4)
+            
+            h_update = self.cross_attn(
+                h_l=h_atoms,
+                h_p=h_atomica_norm,  # Use normalized embeddings
+                mask_l=mask_atoms,
+                mask_p=mask_residues
+            )
+            h_atoms = h_atoms + self.adapter_scale * h_update
+            # Check outputs for NaN
+            if torch.isnan(h_update).any():
+                print(f"WARNING: NaN in cross-attention output (h_update)")
+                h_update = torch.nan_to_num(h_update, nan=0.0)
+            
+            # Apply scaled update to prevent gradient explosion
+            h_atoms = h_atoms + self.adapter_scale * h_update
 
         # combine the two node types
         x = torch.cat((x_atoms, x_residues), dim=0)
@@ -154,9 +266,10 @@ class EGNNDynamics(nn.Module):
 
         if torch.any(torch.isnan(vel)):
             if self.training:
-                vel[torch.isnan(vel)] = 0.0
+                raise RuntimeError("NaN detected in EGNN output during training!")
             else:
-                raise ValueError("NaN detected in EGNN output")
+                vel[torch.isnan(vel)] = 0.0
+                print("WARNING: NaN detected in EGNN output during validation - replacing with zeros")
 
         if self.update_pocket_coords:
             # in case of unconditional joint distribution, include this as in
@@ -167,235 +280,85 @@ class EGNNDynamics(nn.Module):
                torch.cat([vel[len(mask_atoms):], h_final_residues], dim=-1)
 
     def get_edges(self, batch_mask_ligand, batch_mask_pocket, x_ligand, x_pocket):
-        adj_ligand = batch_mask_ligand[:, None] == batch_mask_ligand[None, :]
-        adj_pocket = batch_mask_pocket[:, None] == batch_mask_pocket[None, :]
-        adj_cross = batch_mask_ligand[:, None] == batch_mask_pocket[None, :]
-
-        if self.edge_cutoff_l is not None:
-            adj_ligand = adj_ligand & (torch.cdist(x_ligand, x_ligand) <= self.edge_cutoff_l)
-
-        if self.edge_cutoff_p is not None:
-            adj_pocket = adj_pocket & (torch.cdist(x_pocket, x_pocket) <= self.edge_cutoff_p)
-
-        if self.edge_cutoff_i is not None:
-            adj_cross = adj_cross & (torch.cdist(x_ligand, x_pocket) <= self.edge_cutoff_i)
-
-        adj = torch.cat((torch.cat((adj_ligand, adj_cross), dim=1),
-                         torch.cat((adj_cross.T, adj_pocket), dim=1)), dim=0)
-        edges = torch.stack(torch.where(adj), dim=0)
-
-        return edges
-
-
-class AtomicaDynamics(nn.Module):
-    def __init__(self, atom_nf, context_nf,
-                 n_dims, joint_nf=16, hidden_nf=64, device='cpu',
-                 act_fn=torch.nn.SiLU(), n_layers=4, attention=False,
-                 condition_time=True, tanh=False,
-                 norm_constant=0, inv_sublayers=2, sin_embedding=False,
-                 normalization_factor=100, aggregation_method='sum',
-                 edge_cutoff_ligand=None, edge_cutoff_interaction=None,
-                 reflection_equivariant=True, edge_embedding_dim=None):
-        super().__init__()
-        self.update_pocket_coords = False
-        self.edge_cutoff_l = edge_cutoff_ligand
-        self.edge_cutoff_i = edge_cutoff_interaction
-        self.edge_nf = edge_embedding_dim
-
-        # Ligand (atom) feature encoder
-        self.atom_encoder = nn.Sequential(
-            nn.Linear(atom_nf, 2 * atom_nf),
-            act_fn,
-            nn.Linear(2 * atom_nf, hidden_nf)
-        )
-
-        # Ligand (atom) feature decoder
-        self.atom_decoder = nn.Sequential(
-            nn.Linear(hidden_nf, 2 * atom_nf),
-            act_fn,
-            nn.Linear(2 * atom_nf, atom_nf)
-        )
-
-        # Pocket (context) embedding encoder
-        self.context_encoder = nn.Sequential(
-            nn.Linear(context_nf, 2 * context_nf),
-            act_fn,
-            nn.Linear(2 * context_nf, hidden_nf)
-        )
-
-        self.edge_embedding = nn.Embedding(2, self.edge_nf) \
-            if self.edge_nf is not None else None
-        self.edge_nf = 0 if self.edge_nf is None else self.edge_nf
-
-        if condition_time:
-            dynamics_node_nf = hidden_nf + 1
-        else:
-            print('Warning: dynamics model is _not_ conditioned on time.')
-            dynamics_node_nf = hidden_nf
+        # Optimized: Block-Diagonal Graph Construction
+        edges_list = []
+        
+        # Get unique batch indices
+        n_batches = int(batch_mask_ligand.max()) + 1
+        
+        # Pre-calculate the offset for pocket atoms in the global concatenated tensor
+        # Global structure is: [Ligand_Atoms ... | Pocket_Atoms ...]
+        pocket_offset = len(batch_mask_ligand)
+        
+        for i in range(n_batches):
+            # 1. Find indices for this batch item
+            ligand_indices = torch.nonzero(batch_mask_ligand == i).squeeze(-1)
+            pocket_indices = torch.nonzero(batch_mask_pocket == i).squeeze(-1)
             
-        self.node_nf = dynamics_node_nf
-        self.n_dims = n_dims
-        self.device = device
-        self.condition_time = condition_time
+            # Skip empty batches (if any)
+            if len(ligand_indices) == 0 and len(pocket_indices) == 0:
+                continue
 
-        # --- Core Components ---
-        
-        # 1. Ligand-Ligand (L-L) Module
-        self.egnn = EGNN(
-            in_node_nf=dynamics_node_nf, in_edge_nf=self.edge_nf,
-            hidden_nf=hidden_nf, device=device, act_fn=act_fn,
-            n_layers=n_layers, attention=attention, tanh=True,
-            norm_constant=1e-8,
-            inv_sublayers=inv_sublayers, sin_embedding=sin_embedding,
-            normalization_factor=normalization_factor,
-            aggregation_method=aggregation_method,
-            reflection_equiv=reflection_equivariant
-        )
-        
-        # 2. Ligand-Pocket (L-P) Module
-        self.cross_attention = SE3CrossAttention(
-            in_node_nf_q=dynamics_node_nf, in_node_nf_kv=hidden_nf, # KV (pocket) is not time-conditioned
-            in_edge_nf=self.edge_nf,
-            hidden_nf=hidden_nf, device=device, act_fn=act_fn,
-            n_layers=n_layers, attention=attention, tanh=True,
-            norm_constant=1e-8,
-            inv_sublayers=inv_sublayers, sin_embedding=sin_embedding,
-            normalization_factor=normalization_factor,
-            aggregation_method=aggregation_method,
-            reflection_equiv=reflection_equivariant
-        )
-        # --- End Core Components ---
-
-    def forward(self, xh_lig, xh_context, t, mask_lig, mask_context):
-
-        # --- 1. Prepare Inputs ---
-        x_l = xh_lig[:, :self.n_dims].clone()
-        h_l = xh_lig[:, self.n_dims:].clone()
-
-        x_p = xh_context[:, :self.n_dims].clone()
-        # --- DEBUGGING: Check for overlapping coords ---
-        # Check for L-L overlap
-        ll_dists = torch.cdist(x_l, x_l)
-        # We add 1e-5 to the diagonal to ignore self-distances
-        min_ll_dist = (ll_dists + torch.diag(torch.full((x_l.shape[0],), 1e-5, device=x_l.device))).min()
-        if min_ll_dist < 1e-6:
-             print(f"Warning: Minimum L-L distance is very small: {min_ll_dist.item()}")
-
-        # Check for L-P overlap
-        if x_p.shape[0] > 0:
-            lp_dists = torch.cdist(x_l, x_p)
-            min_lp_dist = lp_dists.min()
-            if min_lp_dist < 1e-6:
-                 print(f"Warning: Minimum L-P distance is very small: {min_lp_dist.item()}")
-        # --- END DEBUGGING ---
-
-
-        h_p_atomica = xh_context[:, self.n_dims:].clone() # These are the ATOMICA embeddings
-
-        # Embed features
-        h_l_emb = self.atom_encoder(h_l)
-        h_p_emb = self.context_encoder(h_p_atomica)
-
-        # Condition ligand features on time
-        if self.condition_time:
-            if np.prod(t.size()) == 1:
-                h_time = torch.empty_like(h_l_emb[:, 0:1]).fill_(t.item())
+            # 2. Extract Coordinates for this batch
+            x_l_batch = x_ligand[ligand_indices]
+            x_p_batch = x_pocket[pocket_indices]
+            
+            # 3. Compute Adjacency (Local)
+            # Ligand-Ligand
+            if self.edge_cutoff_l is not None:
+                d_ll = torch.cdist(x_l_batch, x_l_batch)
+                adj_ll = d_ll <= self.edge_cutoff_l
             else:
-                h_time = t[mask_lig]
-            h_l_t = torch.cat([h_l_emb, h_time], dim=1)
-        else:
-            h_l_t = h_l_emb
-            
-        # h_p_emb is not time-conditioned, it's fixed context
-
-        # --- 2. L-L Path (Internal Physics) ---
-        edges_ll = self.get_ligand_edges(mask_lig, x_l)
-        
-        edge_attr_ll = None
-        if self.edge_nf > 0:
-            edge_types_ll = torch.ones(edges_ll.size(1), dtype=int, device=edges_ll.device) # Type 1 for L-L
-            edge_attr_ll = self.edge_embedding(edge_types_ll)
-
-        h_ll_final, x_ll_final = self.egnn(
-            h_l_t, x_l, edges_ll,
-            node_mask=mask_lig.unsqueeze(-1), 
-            batch_mask=mask_lig,
-            edge_attr=edge_attr_ll
-        )
-        
-        vel_ll = (x_ll_final - x_l)
-        if not torch.all(torch.isfinite(vel_ll)):
-            print("!!! NaN or Inf detected in vel_ll (L-L EGNN) !!!")
-        h_update_ll = (h_ll_final[:, :-1] - h_l_t[:, :-1]) if self.condition_time else (h_ll_final - h_l_emb)
-
-        # --- 3. L-P Path (Cross-Attention Interaction) ---
-        edges_lp = self.get_cross_edges(mask_lig, mask_context, x_l, x_p)
-
-        edge_attr_lp = None
-        if self.edge_nf > 0:
-            edge_types_lp = torch.zeros(edges_lp.size(1), dtype=int, device=edges_lp.device) # Type 0 for L-P
-            edge_attr_lp = self.edge_embedding(edge_types_lp)
-
-        h_lp_final, x_lp_final = self.cross_attention(
-            h_q=h_l_t, x_q=x_l, 
-            h_kv=h_p_emb, x_kv=x_p, 
-            edge_index=edges_lp, 
-            node_mask_q=mask_lig.unsqueeze(-1),
-            batch_mask=mask_lig,
-            edge_attr=edge_attr_lp
-        )
-
-        vel_lp = (x_lp_final - x_l)
-        if not torch.all(torch.isfinite(vel_lp)):
-            print("!!! NaN or Inf detected in vel_lp (L-P CrossAttention) !!!")
-        h_update_lp = (h_lp_final[:, :-1] - h_l_t[:, :-1]) if self.condition_time else (h_lp_final - h_l_emb)
-
-        # --- 4. Combine Updates ---
-        final_velocity = (vel_ll + vel_lp) / 2.0
-        # Average the two output feature states for stability
-        if self.condition_time:
-            # Average the states and remove the time dimension
-            h_final_emb = (h_ll_final[:, :-1] + h_lp_final[:, :-1]) / 2.0
-        else:
-            # Average the states
-            h_final_emb = (h_ll_final + h_lp_final) / 2.0
-        
+                adj_ll = torch.ones(len(x_l_batch), len(x_l_batch), device=x_l_batch.device, dtype=torch.bool)
                 
-        # Decode features back to original atom_nf
-        final_features = self.atom_decoder(h_final_emb)
-
-        if not torch.all(torch.isfinite(final_velocity)):
-            if self.training:
-                print("Warning: NaN or Inf detected in AtomicaDynamics output velocity. Clamping to 0.")
-                final_velocity = torch.nan_to_num(final_velocity, nan=0.0, posinf=0.0, neginf=0.0)
+            # Pocket-Pocket
+            if self.edge_cutoff_p is not None:
+                d_pp = torch.cdist(x_p_batch, x_p_batch)
+                adj_pp = d_pp <= self.edge_cutoff_p
             else:
-                raise ValueError("NaN or Inf detected in AtomicaDynamics output velocity")
+                adj_pp = torch.ones(len(x_p_batch), len(x_p_batch), device=x_p_batch.device, dtype=torch.bool)
+                
+            # Cross (Ligand-Pocket)
+            if self.edge_cutoff_i is not None:
+                d_lp = torch.cdist(x_l_batch, x_p_batch)
+                adj_lp = d_lp <= self.edge_cutoff_i
+            else:
+                adj_lp = torch.ones(len(x_l_batch), len(x_p_batch), device=x_l_batch.device, dtype=torch.bool)
 
-        if not torch.all(torch.isfinite(final_features)):
-             if self.training:
-                print("Warning: NaN or Inf detected in AtomicaDynamics output features. Clamping to 0.")
-                final_features = torch.nan_to_num(final_features, nan=0.0, posinf=0.0, neginf=0.0)
-             else:
-                raise ValueError("NaN or Inf detected in AtomicaDynamics output features")
-        # Context (pocket) is fixed, so its "update" is all zeros.
-        # This matches the EGNNDynamics return signature.
-        ligand_update = torch.cat([final_velocity, final_features], dim=-1)
-        pocket_update = torch.zeros_like(xh_context)
+            # 4. Build Block Matrix
+            top = torch.cat([adj_ll, adj_lp], dim=1)
+            bottom = torch.cat([adj_lp.t(), adj_pp], dim=1)
+            adj_batch = torch.cat([top, bottom], dim=0)
+            
+            # 5. Convert to Edge Indices (Local to this batch's subset)
+            src_local, dst_local = torch.where(adj_batch)
+            
+            # 6. Map Local Indices -> Global Indices
+            # CRITICAL FIX: Add offset to pocket indices so they point to the correct
+            # section of the concatenated [Ligand, Pocket] tensors.
+            
+            global_indices = torch.cat([ligand_indices, pocket_indices + pocket_offset])
+            
+            src_global = global_indices[src_local]
+            dst_global = global_indices[dst_local]
+            
+            edges_batch = torch.stack([src_global, dst_global], dim=0)
+            edges_list.append(edges_batch)
 
-        return ligand_update, pocket_update
+        if len(edges_list) > 0:
+            edges = torch.cat(edges_list, dim=1)
+        else:
+            edges = torch.empty((2, 0), device=x_ligand.device, dtype=torch.long)
 
-
-    def get_ligand_edges(self, batch_mask_ligand, x_ligand):
-        adj_ligand = batch_mask_ligand[:, None] == batch_mask_ligand[None, :]
-        if self.edge_cutoff_l is not None:
-            adj_ligand = adj_ligand & (torch.cdist(x_ligand, x_ligand) <= self.edge_cutoff_l)
-        adj_ligand = adj_ligand ^ torch.diag(torch.diag(adj_ligand)) # remove self-loops
-        edges = torch.stack(torch.where(adj_ligand), dim=0)
         return edges
 
-    def get_cross_edges(self, batch_mask_ligand, batch_mask_pocket, x_ligand, x_pocket):
-        adj_cross = batch_mask_ligand[:, None] == batch_mask_pocket[None, :]
-        if self.edge_cutoff_i is not None:
-            adj_cross = adj_cross & (torch.cdist(x_ligand, x_pocket) <= self.edge_cutoff_i)
-        edges = torch.stack(torch.where(adj_cross), dim=0)
-        return edges
+    def freeze_backbone(self):
+        for param in self.parameters():
+            param.requires_grad = False
+        
+        if self.cross_attn is not None:
+            for param in self.cross_attn.parameters():
+                param.requires_grad = True
+        
+        for param in self.residue_encoder.parameters():
+            param.requires_grad = True

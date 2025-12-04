@@ -14,63 +14,64 @@ The core of this project involved modifying DiffSBDD to accept and be conditione
 
 ### 1. Data Preprocessing Pipeline
 
-A new script, **`process_atomica_jsonl.py`**, was created to act as the bridge between the ATOMICA data format and the DiffSBDD training input.
+We provide a script `process_expert_atomica.py` to process the CrossDocked dataset and generate ATOMICA embeddings.
 
-* **Purpose:** To parse complex data from a `.jsonl.gz` file.
-<img width="1963" height="1184" alt="Untitled diagram-2025-10-30-211120" src="https://github.com/user-attachments/assets/8f1b7a13-567e-49b4-96e2-72ca813282b9" />
-
-* **Function:**
-
-  1. It loads a pre-trained ATOMICA model.
-
-  2. For each protein-ligand complex, it separates the pocket and ligand atoms.
-
-  3. It feeds the pocket atoms into the ATOMICA model to generate `pocket_atomica_embeddings`.
-
-  4. It saves the ligand coordinates, ligand one-hot encodings, pocket coordinates, and the new `pocket_atomica_embeddings` into individual `.pt` files.
-<img width="4166" height="388" alt="Untitled diagram-2025-10-30-211619" src="https://github.com/user-attachments/assets/eaecb4e8-e619-43cb-98f3-5ac7cf04a823" />
-
-
+**Usage:**
+```bash
+python process_expert_atomica.py
+```
+This script:
+1.  Loads a pre-trained ATOMICA model.
+2.  Filters the dataset based on expert splits.
+3.  Computes ATOMICA embeddings for each pocket.
+4.  Saves the processed data (coordinates, one-hot encodings, embeddings) to `.pt` files.
 
 ### 2. SE(3) Cross-Attention Architecture
 
-To allow the diffusion model to be conditioned on the new embeddings, a new network architecture was introduced in **`DiffSBDD/equivariant_diffusion/egnn_new.py`**. This file adds several new modules to perform SE(3) equivariant cross-attention.
+The core model logic is implemented in `DiffSBDD/equivariant_diffusion/dynamics.py`. We introduced a `SE3EquivariantCrossAttention` module that allows the diffusion model to attend to the ATOMICA pocket embeddings.
 
-This allows the model to integrate information from the static pocket embeddings (which act as **Key/Value** pairs) into the diffusion process of the ligand atoms (which act as **Queries**).
+### 3. Training
 
-* **`CrossGCL`**: A modified Graph Convolutional Layer (GCL) for cross-attention. It computes messages from Key/Value (KV) nodes to Query (Q) nodes and only updates the Q nodes.
+To train the model with ATOMICA conditioning, use the provided configuration file:
 
-* **`CrossEquivariantBlock`**: This block wraps the `CrossGCL` and an `EquivariantUpdate` module. It handles the equivariant update of the Query nodes' features (`h_q`) and coordinates (`x_q`) based on the features and coordinates of the Key/Value nodes (`h_kv`, `x_kv`).
+```bash
+python DiffSBDD/train.py --config DiffSBDD/configs/crossdock_fullatom_cond.yml
+```
 
-* **`SE3CrossAttention`**: The main module that wraps the `CrossEquivariantBlock` layers. It handles the initial feature embeddings for both the Q (ligand) and KV (pocket) inputs and passes them through the attention blocks to produce the final, conditioned ligand atom features and coordinates.
+Key configuration parameters:
+-   `atomica_nf`: Dimension of ATOMICA embeddings (default: 32).
+-   `cross_attn_type`: Type of cross-attention (e.g., 'full').
 
-### 3. Dataset & Configuration
+### 4. Optimization & Generation
 
-The DiffSBDD data-loading pipeline and configuration were updated to support the new ATOMICA-based dataset.
+We provide two scripts for generating ligands, both supporting ATOMICA embeddings.
 
-* **`DiffSBDD/constants.py`:**
+#### Optimization (`DiffSBDD/optimize.py`)
+Optimizes ligands for a specific pocket, optionally guiding generation with properties like QED or SA.
 
-  * This file was updated with ATOMICA's specific vocabulary, including `atomica_atom_decoder`, `atomica_atom_encoder`, and `atomica_block_vocab`.
+```bash
+python DiffSBDD/optimize.py \
+    --checkpoint checkpoints/crossdocked_fullatom_cond.ckpt \
+    --pdbfile example/5ndu.pdb \
+    --ref_ligand example/5ndu_linked_mols.sdf \
+    --atomica_config ATOMICA/pretrain/pretrain_model_config.json \
+    --atomica_weights ATOMICA/pretrain/pretrain_model_weights.pt \
+    --outfile output.sdf
+```
 
-  * A new dataset profile, `atomica_PL`, was added to `dataset_params` to use these new vocabularies.
+#### Ligand Generation (`DiffSBDD/generate_ligands.py`)
+Standard ligand generation script, updated to support ATOMICA embeddings.
 
-* **`DiffSBDD/dataset.py`:**
+```bash
+python DiffSBDD/generate_ligands.py \
+    checkpoints/crossdocked_fullatom_cond.ckpt \
+    --pdbfile example/5ndu.pdb \
+    --ref_ligand example/5ndu_linked_mols.sdf \
+    --atomica_config ATOMICA/pretrain/pretrain_model_config.json \
+    --atomica_weights ATOMICA/pretrain/pretrain_model_weights.pt \
+    --outfile generated_ligands.sdf
+```
 
-  * The `ProcessedLigandPocketDataset` class was modified to load data from a directory of `.pt` files (the output of `process_atomica_jsonl.py`) instead of a single `.npz` file.
-
-  * The data loader was updated to correctly load and collate the `pocket_atomica_embeddings` for batching.
-
-* **`DiffSBDD/configs/`:**
-
-  * New configuration files, such as `atomica_train.yml`, were added.
-
-  * These configs define the new run parameters, setting the `pocket_representation: atomica` and `dataset: atomica_PL`.
-
-  * They also specify the `atomica_embed_dim` in the `egnn_params` section, confirming the use of embeddings as a model parameter.
-
-### 4. Utility Functions
-
-* **`DiffSBDD/utils.py`:** This file was updated with helper functions (`format_atomica_batch`, `load_atomica_model`) to load the ATOMICA model and format data for it, supporting the preprocessing script.
 
 ## [ATOMICA](https://www.google.com/search?q=ATOMICA/README.md): Learning Universal Representations of Intermolecular Interactions
 
