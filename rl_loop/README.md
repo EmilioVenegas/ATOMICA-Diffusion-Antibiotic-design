@@ -18,10 +18,16 @@ rl_loop/
 ├── README.md                # This file
 ├── RL_loop.py               # Main scoring and ranking logic
 ├── mock_generate_ligands.py # Utility for testing without DiffSBDD
+├── tanimoto_similarity.py   # Diversity analysis using Tanimoto similarity
+├── reos_filter.py           # REOS filter for drug-likeness
+├── test_rl_loop.py          # Test suite for RL loop
+├── INSTALLATION.md          # Installation instructions
+├── QUICKSTART.md            # Quick start guide
+├── SUMMARY.md               # Implementation summary
 ├── examples/                # Input ligand SDF files (generated externally)
 │   ├── .gitkeep
 │   └── generated_from_refactor.sdf      # Example generated ligands (committed manually)
-└── results/                 # Scored output CSV files
+└── results/                 # Scored output CSV files and SDF exports
     ├── .gitkeep
     └── generated_from_refactor_scored.csv  # Example scored results
 
@@ -64,13 +70,48 @@ From repo root:
 cd ~/ATOMICA-Diffusion-Antibiotic-design
 
 python rl_loop/RL_loop.py \
-    --input rl_loop/examples/generated_from_refactor.sdf \
-    --output rl_loop/results/generated_from_refactor_scored.csv
-
+    -i rl_loop/examples/generated_from_refactor.sdf \
+    -o rl_loop/results/generated_from_refactor_scored.csv \
+    --save_top_sdf \
+    --top_sdf_count 1
 
 Which produces:
 
 rl_loop/results/generated_from_refactor_scored.csv
+rl_loop/results/generated_from_refactor_scored_top1.sdf  # Top molecule for optimization
+
+3. (Optional) Filter with REOS criteria:
+
+python rl_loop/reos_filter.py \
+    rl_loop/examples/generated_from_refactor.sdf \
+    rl_loop/examples/generated_filtered.sdf \
+    --max_violations 1
+
+4. Optimize top ADMET-scored ligand:
+
+Use the top molecule from step 2 as the reference ligand for optimization:
+
+python DiffSBDD/optimize.py \
+      --checkpoint DiffSBDD/checkpoints/last_ckpt.ckpt \
+      --pdbfile DiffSBDD/example/3rfm.pdb \
+      --ref_ligand rl_loop/results/iter1_scored_top1_top1.sdf \
+      --objective qed \
+      --timesteps 50 \
+      --population_size 10 \
+      --evolution_steps 3 \
+      --top_k 3 \
+      --outfile rl_loop/examples/iter2_optimized.sdf
+
+This optimizes the top ADMET-scored molecule for the specified objective (QED or SA) and produces:
+
+rl_loop/examples/iter2_optimized.sdf
+
+You can then re-score the optimized molecules and iterate:
+
+python rl_loop/RL_loop.py \
+    -i rl_loop/examples/iter2_optimized.sdf \
+    -o rl_loop/results/iter2_scored.csv \
+    --save_top_sdf
 
 
 Both of these files were included in this branch as working examples.
