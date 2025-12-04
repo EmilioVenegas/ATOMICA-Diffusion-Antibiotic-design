@@ -10,6 +10,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 
 from scripts.eval.boltz_random import run_random_affinity_workflow
 from scripts.eval.evaluate import ks_test_results, load_affinity_values
@@ -491,6 +492,93 @@ def run_comparison(
                     rep.write("  Interpretation: no strong evidence of difference (p >= 0.05)\n")
                 rep.write("-" * 80 + "\n")
         print(f"✓ Per-metric KS text report saved to {report_path}")
+    
+    # Step 6: Molecular descriptor comparison
+    print("=" * 60)
+    print("STEP 6: Generating Molecular Descriptor Comparison")
+    print("=" * 60)
+    
+    try:
+        # Load CSV files to extract descriptors
+        df_a = pd.read_csv(dataset_a_path)
+        df_b = pd.read_csv(dataset_b_path)
+        
+        descriptor_cols = ['mw', 'alogp', 'hbd', 'hba']
+        available_descriptors = [col for col in descriptor_cols if col in df_a.columns and col in df_b.columns]
+        
+        if not available_descriptors:
+            print("Warning: No molecular descriptor columns (mw, alogp, hbd, hba) found in CSV files.")
+            print("Skipping descriptor comparison.")
+        else:
+            print(f"Found descriptors: {available_descriptors}")
+            
+            # Create 2x2 grid for 4 descriptors
+            n_descriptors = len(available_descriptors)
+            n_cols = 2
+            n_rows = 2
+            
+            fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows))
+            axes = np.atleast_1d(axes).flatten()
+            
+            for idx, desc in enumerate(available_descriptors):
+                ax = axes[idx]
+                
+                # Extract descriptor values, handling NaN
+                vals_a = df_a[desc].dropna().values
+                vals_b = df_b[desc].dropna().values
+                
+                if len(vals_a) == 0 or len(vals_b) == 0:
+                    ax.text(0.5, 0.5, f"No data for {desc}", ha='center', va='center', transform=ax.transAxes)
+                    ax.set_title(desc, fontsize=10, fontweight="bold")
+                    continue
+                
+                # Overlaid histograms
+                counts_da, bins_da, _ = ax.hist(vals_a, bins=20, alpha=0.6, color="steelblue",
+                                                label=dataset_a_name, edgecolor="white")
+                counts_db, bins_db, _ = ax.hist(vals_b, bins=20, alpha=0.6, color="coral",
+                                                label=dataset_b_name, edgecolor="white")
+                
+                ax.set_xlabel("value", fontsize=10)
+                ax.set_ylabel("count", fontsize=10)
+                ax.grid(axis="y", alpha=0.3)
+                
+                # KDE overlays
+                try:
+                    from scipy.stats import gaussian_kde
+                    kde_da = gaussian_kde(vals_a)
+                    kde_db = gaussian_kde(vals_b)
+                    xs_d = np.linspace(min(vals_a.min(), vals_b.min()),
+                                       max(vals_a.max(), vals_b.max()), 200)
+                    scale_da = counts_da.max() / kde_da(xs_d).max() if kde_da(xs_d).max() > 0 else 1.0
+                    scale_db = counts_db.max() / kde_db(xs_d).max() if kde_db(xs_d).max() > 0 else 1.0
+                    ax.plot(xs_d, kde_da(xs_d) * scale_da, color="navy", linewidth=1.0)
+                    ax.plot(xs_d, kde_db(xs_d) * scale_db, color="darkred", linewidth=1.0)
+                except Exception:
+                    pass
+                
+                # Simple title with descriptor name
+                ax.set_title(desc, fontsize=10, fontweight="bold")
+                ax.legend(fontsize=8)
+            
+            # Hide any unused subplots
+            for j in range(len(available_descriptors), len(axes)):
+                fig.delaxes(axes[j])
+            
+            fig.suptitle(
+                f"{dataset_a_name} vs {dataset_b_name} – Molecular Descriptors",
+                fontsize=14,
+                fontweight="bold",
+            )
+            fig.tight_layout(rect=[0, 0, 1, 0.96])
+            
+            descriptor_hist_path = comparison_dir / "molecular_descriptors_comparison.png"
+            plt.savefig(descriptor_hist_path, dpi=150, bbox_inches="tight")
+            plt.close()
+            print(f"✓ Molecular descriptor comparison saved to {descriptor_hist_path}")
+            
+    except Exception as e:
+        print(f"Warning: Error generating descriptor comparison: {e}")
+        print("Skipping descriptor comparison.")
     
     print()
     print("=" * 60)
