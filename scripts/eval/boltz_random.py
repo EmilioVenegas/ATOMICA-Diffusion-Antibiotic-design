@@ -1,4 +1,36 @@
-"""Sample random ligands, score them with Boltz-2, and summarise affinity scores."""
+"""Sample random ligands, score them with Boltz-2, and summarise affinity scores.
+
+This script is intended for command line use. Provide a chemical space file (e.g.
+CSV with a `smiles` column), optionally a YAML template describing the receptor
+setup, and it will:
+
+1. Randomly sample ligands from the chemical space.
+2. Materialise Boltz YAML files for each sample (updating the ligand entry).
+3. Invoke the Boltz-2 predictor in CPU mode to obtain affinity estimates.
+4. Collate the affinity distribution and write summary statistics / histogram.
+
+Example
+-------
+
+```bash
+poetry run python scripts/eval/random.py \
+    --chemical-space data/chemical_space.csv \
+    --column smiles \
+    --sample-size 50 \
+    --template scripts/eval/templates/base_target.yaml \
+    --binder-id LIG \
+    --output-dir outputs/random_boltz_eval
+```
+
+Notes
+-----
+- Boltz requires substantial compute even on CPU; expect the prediction stage to
+  take several minutes depending on `sample_size` and the selected sampling
+  parameters.
+- The template YAML should contain all non-ligand entries (e.g. protein chains,
+  constraints). The ligand entry with id `binder-id` will be replaced per
+  sampled molecule. If no template is provided, only a ligand entry is emitted.
+"""
 
 from __future__ import annotations
 
@@ -173,7 +205,7 @@ def run_boltz_predictions(
         sampling_steps_affinity=sampling_steps_affinity,
         diffusion_samples_affinity=diffusion_samples_affinity,
         max_parallel_samples=1,
-        num_workers=0,
+        num_workers=20,
         override=True,
         use_msa_server=False,
         model="boltz2",
@@ -187,6 +219,15 @@ def run_boltz_predictions(
 
 
 def collect_affinity_scores(prediction_root: Path) -> Dict[str, Dict[str, float]]:
+    """Collect per-sample scores from Boltz predictions.
+
+    Currently we:
+      - Always load all fields from the affinity JSONs
+      - Optionally augment with scalar fields from the confidence JSONs
+        (e.g. confidence_score, ptm, iptm, complex_plddt, etc.)
+
+    Nested structures (like per-chain dicts) are ignored for now.
+    """
     predictions_dir = prediction_root / "predictions"
     if not predictions_dir.exists():
         raise FileNotFoundError(f"Predictions directory not found: {predictions_dir}")
@@ -195,11 +236,45 @@ def collect_affinity_scores(prediction_root: Path) -> Dict[str, Dict[str, float]
     for sample_dir in predictions_dir.iterdir():
         if not sample_dir.is_dir():
             continue
+
+        # Base affinity metrics
         affinity_json = sample_dir / f"affinity_{sample_dir.name}.json"
         if not affinity_json.exists():
             continue
         with affinity_json.open("r", encoding="utf-8") as handle:
-            affinity_scores[sample_dir.name] = json.load(handle)
+            record: Dict[str, Any] = json.load(handle)
+
+        # Optional confidence metrics, if present
+        confidence_json = sample_dir / f"confidence_{sample_dir.name}_model_0.json"
+        if confidence_json.exists():
+            try:
+                with confidence_json.open("r", encoding="utf-8") as handle:
+                    confidence_data = json.load(handle)
+                for key, value in confidence_data.items():
+                    # Only keep top-level scalar fields (ints/floats)
+                    if isinstance(value, (int, float)):
+                        # Avoid overwriting affinity keys if they share a name
+                        if key in record:
+                            record[f"confidence_{key}"] = value
+                        else:
+                            record[key] = value
+
+                # Convenience aliases for commonly used scores
+                # Use more descriptive keys so downstream code can easily find them.
+                if "complex_plddt" in confidence_data and isinstance(
+                    confidence_data["complex_plddt"], (int, float)
+                ):
+                    record["pLDDT"] = float(confidence_data["complex_plddt"])
+                if "complex_pde" in confidence_data and isinstance(
+                    confidence_data["complex_pde"], (int, float)
+                ):
+                    # Treat complex_pde as a scalar PAE-like summary
+                    record["PAE"] = float(confidence_data["complex_pde"])
+            except Exception:
+                # If anything goes wrong, just skip confidence augmentation
+                pass
+
+        affinity_scores[sample_dir.name] = record
 
     if not affinity_scores:
         raise RuntimeError(

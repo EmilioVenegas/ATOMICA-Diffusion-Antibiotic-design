@@ -28,6 +28,17 @@ def load_affinity_values(summary_dir: Path) -> np.ndarray:
 
 def ks_test_results(dir_a: Path, dir_b: Path) -> dict[str, float]:
     """Compute the two-sample Kolmogorov–Smirnov statistic between two runs."""
+    """Interpretation:
+    statistic is the Kolmogorov–Smirnov D value (0–1). 
+    Largest gap between the cumulative distributions; 
+    0: curves on top of each other, 
+    1: completely disjoint.
+    pvalue significance level to reject “both samples come from the same distribution.” 
+    Conventional thresholds: p < 0.05 (or stricter)
+    Small p (close to 0): distributions likely differ.
+    Large p (close to 1): differences could just be sampling noise.
+    n_a and n_b are the number of affinity scores in each set; small n makes the test less sensitive.
+    """
 
     values_a = load_affinity_values(dir_a)
     values_b = load_affinity_values(dir_b)
