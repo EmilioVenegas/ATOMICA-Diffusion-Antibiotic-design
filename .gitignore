@@ -4,6 +4,7 @@ __pycache__/
 outputs_embedded.pt/
 data/
 PLjsonl.gz
+PL.jsonl.gz
 my_logs/
 analyse.py
 analyze_processed_data.py
@@ -50,3 +51,6 @@ sample_and_visualize.py
 DiffSBDD/__init__.py
 
 DiffSBDD/equivariant_diffusion/__init__.py
+demo_outputs/
+outputs/
+scripts/eval/outputs/
