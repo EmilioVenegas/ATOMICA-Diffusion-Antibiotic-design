@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Results
+results/*.csv
+results/*.parquet
+!results/.gitkeep
+
+# Examples (user generated)
+examples/*.sdf
+!examples/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
