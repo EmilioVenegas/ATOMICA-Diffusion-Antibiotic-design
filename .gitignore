@@ -3,6 +3,10 @@ __pycache__/
 
 outputs_embedded.pt/
 data/
+PL.jsonl.gz
+demo_outputs/
+outputs/
+scripts/eval/outputs/
 PLjsonl.gz
 my_logs/
 analyse.py
