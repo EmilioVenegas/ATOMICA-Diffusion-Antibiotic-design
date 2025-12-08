@@ -62,7 +62,7 @@ class LigandPocketDDPM(pl.LightningModule):
     ):
         super(LigandPocketDDPM, self).__init__()
         self.save_hyperparameters()
-
+        
         ddpm_models = {'joint': EnVariationalDiffusion,
                        'pocket_conditioning': ConditionalDDPM,
                        'pocket_conditioning_simple': SimpleConditionalDDPM}
@@ -95,7 +95,7 @@ class LigandPocketDDPM(pl.LightningModule):
             self.gradnorm_queue = utils.Queue()
             # Add large value that will be flushed.
             self.gradnorm_queue.add(3000)
-
+    
         self.lig_type_encoder = self.dataset_info['atom_encoder']
         self.lig_type_decoder = self.dataset_info['atom_decoder']
         self.pocket_type_encoder = self.dataset_info['aa_encoder'] \
@@ -175,7 +175,7 @@ class LigandPocketDDPM(pl.LightningModule):
         self.ddpm = ddpm_models[self.mode](
                 dynamics=net_dynamics,
                 atom_nf=self.atom_nf,
-                residue_nf=self.aa_nf,
+                residue_nf=self.aa_nf, 
                 n_dims=self.x_dims,
                 timesteps=diffusion_params.diffusion_steps,
                 noise_schedule=diffusion_params.diffusion_noise_schedule,
@@ -213,7 +213,7 @@ class LigandPocketDDPM(pl.LightningModule):
                 # Adapter layers: layernorm and cross_attn
                 if 'atomica_norm' in name or 'cross_attn' in name:
                     adapter_params.append(param)
-                else:
+        else:
                     backbone_params.append(param)
             
             # Use config-specified learning rates
@@ -255,9 +255,9 @@ class LigandPocketDDPM(pl.LightningModule):
         if stage == 'fit':
             train_path = Path(self.datadir, 'train.npz')
             if train_path.exists():
-                self.train_dataset = ProcessedLigandPocketDataset(
-                    train_path, transform=self.data_transform)
-                self.val_dataset = ProcessedLigandPocketDataset(
+            self.train_dataset = ProcessedLigandPocketDataset(
+                train_path, transform=self.data_transform)
+            self.val_dataset = ProcessedLigandPocketDataset(
                     Path(self.datadir, 'val.npz'), transform=self.data_transform)
             else:
                 from dataset import LigandPocketDatasetPT
@@ -267,7 +267,7 @@ class LigandPocketDDPM(pl.LightningModule):
                 val_path = Path(self.datadir, 'val')
                 if val_path.exists():
                     self.val_dataset = LigandPocketDatasetPT(
-                        val_path, transform=self.data_transform)
+                val_path, transform=self.data_transform)
                 else:
                     # Fallback or create a subset of train if val doesn't exist?
                     # For now assume it exists or user handles it.
@@ -282,8 +282,8 @@ class LigandPocketDDPM(pl.LightningModule):
         elif stage == 'test':
             test_path = Path(self.datadir, 'test.npz')
             if test_path.exists():
-                self.test_dataset = ProcessedLigandPocketDataset(
-                    test_path, transform=self.data_transform)
+            self.test_dataset = ProcessedLigandPocketDataset(
+                test_path, transform=self.data_transform)
             else:
                 from dataset import LigandPocketDatasetPT
                 self.test_dataset = LigandPocketDatasetPT(
@@ -319,7 +319,7 @@ class LigandPocketDDPM(pl.LightningModule):
         if self.virtual_nodes:
             ligand['num_virtual_atoms'] = data['num_virtual_atoms'].to(
                 self.device, INT_TYPE)
-
+            
         pocket = {
             'x': data['pocket_coords'].to(self.device, FLOAT_TYPE),
             'one_hot': data['pocket_one_hot'].to(self.device, FLOAT_TYPE),
@@ -380,8 +380,8 @@ class LigandPocketDDPM(pl.LightningModule):
 
         # Add auxiliary loss term
         if self.auxiliary_loss and self.loss_type == 'l2':
-            x_lig_hat = xh_lig_hat[:, :self.x_dims]
-            h_lig_hat = xh_lig_hat[:, self.x_dims:]
+        x_lig_hat = xh_lig_hat[:, :self.x_dims]
+        h_lig_hat = xh_lig_hat[:, self.x_dims:]
             weighted_lj_potential = \
                 self.auxiliary_weight_schedule(t_int.long()) * \
                 self.lj_potential(x_lig_hat, h_lig_hat, ligand['mask'])
@@ -397,7 +397,7 @@ class LigandPocketDDPM(pl.LightningModule):
         info['neg_log_const_0'] = neg_log_const_0.mean(0)
         info['log_pN'] = log_pN.mean(0)
         return nll, info
-
+    
     def lj_potential(self, atom_x, atom_one_hot, batch_mask):
         adj = batch_mask[:, None] == batch_mask[None, :]
         adj = adj ^ torch.diag(torch.diag(adj))  # remove self-edges
@@ -405,7 +405,7 @@ class LigandPocketDDPM(pl.LightningModule):
 
         # Compute pair-wise potentials
         r = torch.sum((atom_x[edges[0]] - atom_x[edges[1]])**2, dim=1).sqrt()
-
+        
         # Get optimal radii
         lennard_jones_radii = torch.tensor(self.lj_rm, device=r.device)
         # unit conversion pm -> A
@@ -417,13 +417,13 @@ class LigandPocketDDPM(pl.LightningModule):
                                  atom_type_idx[edges[1]]]
         sigma = 2 ** (-1 / 6) * rm
         out = 4 * ((sigma / r) ** 12 - (sigma / r) ** 6)
-
+       
         if self.clamp_lj is not None:
             out = torch.clamp(out, min=None, max=self.clamp_lj)
 
         # Compute potential per atom
         out = scatter_add(out, edges[0], dim=0, dim_size=len(atom_x))
-
+        
         # Sum potentials of all atoms
         return scatter_add(out, batch_mask, dim=0)
 
@@ -458,9 +458,9 @@ class LigandPocketDDPM(pl.LightningModule):
         self.log_metrics(info, 'train', batch_size=len(data['num_lig_atoms']))
 
         return info
-
+    
     def _shared_eval(self, data, prefix, *args):
-        nll, info = self.forward(data)
+            nll, info = self.forward(data)
         loss = nll.mean(0)
 
         info['loss'] = loss
@@ -499,7 +499,7 @@ class LigandPocketDDPM(pl.LightningModule):
             getattr(self, 'sample_and_save' + suffix)(
                 self.eval_params.n_visualize_samples)
             print(f'Sample visualization took {time() - tic:.2f} seconds')
-
+        
         if (self.current_epoch + 1) % self.visualize_chain_epoch == 0:
             tic = time()
             getattr(self, 'sample_chain_and_save' + suffix)(
@@ -639,8 +639,8 @@ class LigandPocketDDPM(pl.LightningModule):
             ))
 
             atom_types.extend(atom_type.tolist())
-            aa_types.extend(
-                xh_pocket[:, self.x_dims:].argmax(1).detach().cpu().tolist())
+                aa_types.extend(
+                    xh_pocket[:, self.x_dims:].argmax(1).detach().cpu().tolist())
 
         return self.analyze_sample(molecules, atom_types, aa_types,
                                    receptors=receptors)
@@ -652,7 +652,7 @@ class LigandPocketDDPM(pl.LightningModule):
         xh_lig, xh_pocket, lig_mask, pocket_mask = \
             self.ddpm.sample(n_samples, num_nodes_lig, num_nodes_pocket,
                              device=self.device)
-
+        
         if self.pocket_representation == 'CA':
             # convert residues into atom representation for visualization
             x_pocket, one_hot_pocket = utils.residues_to_atoms(
@@ -662,7 +662,7 @@ class LigandPocketDDPM(pl.LightningModule):
                 xh_pocket[:, :self.x_dims], xh_pocket[:, self.x_dims:]
         x = torch.cat((xh_lig[:, :self.x_dims], x_pocket), dim=0)
         one_hot = torch.cat((xh_lig[:, self.x_dims:], one_hot_pocket), dim=0)
-
+        
         outdir = Path(self.outdir, f'epoch_{self.current_epoch}')
         save_xyz_file(str(outdir) + '/', one_hot, x, self.lig_type_decoder,
                       name='molecule',
@@ -685,7 +685,7 @@ class LigandPocketDDPM(pl.LightningModule):
 
         xh_lig, xh_pocket, lig_mask, pocket_mask = \
             self.ddpm.sample_given_pocket(pocket, num_nodes_lig)
-
+        
         if self.pocket_representation == 'CA':
             # convert residues into atom representation for visualization
             x_pocket, one_hot_pocket = utils.residues_to_atoms(
@@ -810,43 +810,43 @@ class LigandPocketDDPM(pl.LightningModule):
 
     def prepare_pocket(self, biopython_residues, repeats=1):
 
-        if self.pocket_representation == 'CA':
-            pocket_coord = torch.tensor(np.array(
-                [res['CA'].get_coord() for res in biopython_residues]),
-                device=self.device, dtype=FLOAT_TYPE)
-            pocket_types = torch.tensor(
+            if self.pocket_representation == 'CA':
+                pocket_coord = torch.tensor(np.array(
+                    [res['CA'].get_coord() for res in biopython_residues]),
+                    device=self.device, dtype=FLOAT_TYPE)
+                pocket_types = torch.tensor(
                 [self.pocket_type_encoder[three_to_one(res.get_resname())]
-                 for res in biopython_residues], device=self.device)
+                     for res in biopython_residues], device=self.device)
         else:
-            pocket_atoms = [a for res in biopython_residues
-                            for a in res.get_atoms()
-                            if (a.element.capitalize() in self.pocket_type_encoder or a.element != 'H')]
-            pocket_coord = torch.tensor(np.array(
-                [a.get_coord() for a in pocket_atoms]),
-                device=self.device, dtype=FLOAT_TYPE)
-            pocket_types = torch.tensor(
-            [self.pocket_type_encoder[a.element.capitalize()]
-             for a in pocket_atoms], device=self.device)
+                pocket_atoms = [a for res in biopython_residues
+                                for a in res.get_atoms()
+                                if (a.element.capitalize() in self.pocket_type_encoder or a.element != 'H')]
+                pocket_coord = torch.tensor(np.array(
+                    [a.get_coord() for a in pocket_atoms]),
+                    device=self.device, dtype=FLOAT_TYPE)
+                pocket_types = torch.tensor(
+                    [self.pocket_type_encoder[a.element.capitalize()]
+                     for a in pocket_atoms], device=self.device)
 
-        pocket_one_hot = F.one_hot(
-            pocket_types, num_classes=len(self.pocket_type_encoder)
-        )
+            pocket_one_hot = F.one_hot(
+                pocket_types, num_classes=len(self.pocket_type_encoder)
+            )
 
-        pocket_size = torch.tensor([len(pocket_coord)] * repeats,
-                                   device=self.device, dtype=INT_TYPE)
-        pocket_mask = torch.repeat_interleave(
-            torch.arange(repeats, device=self.device, dtype=INT_TYPE),
-            len(pocket_coord)
-        )
+            pocket_size = torch.tensor([len(pocket_coord)] * repeats,
+                                       device=self.device, dtype=INT_TYPE)
+            pocket_mask = torch.repeat_interleave(
+                torch.arange(repeats, device=self.device, dtype=INT_TYPE),
+                len(pocket_coord)
+            )
 
-        pocket = {
-            'x': pocket_coord.repeat(repeats, 1),
-            'one_hot': pocket_one_hot.repeat(repeats, 1),
-            'size': pocket_size,
-            'mask': pocket_mask
-        }
+            pocket = {
+                'x': pocket_coord.repeat(repeats, 1),
+                'one_hot': pocket_one_hot.repeat(repeats, 1),
+                'size': pocket_size,
+                'mask': pocket_mask
+            }
 
-        return pocket
+            return pocket
 
     def generate_ligands(self, pdb_file, n_samples, pocket_ids=None,
                          ref_ligand=None, num_nodes_lig=None, sanitize=False,
@@ -891,7 +891,7 @@ class LigandPocketDDPM(pl.LightningModule):
         else:
             # define pocket with reference ligand
             residues = utils.get_pocket_from_ligand(pdb_struct, ref_ligand)
-
+        
         pocket = self.prepare_pocket(residues, repeats=n_samples)
 
         if atomica_model is not None:
