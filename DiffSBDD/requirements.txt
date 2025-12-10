@@ -1,0 +1,97 @@
+# Requirements for DiffSBDD (converted from environment.yaml)
+# Python 3.10.4 recommended
+#
+# INSTALLATION NOTES:
+# 1. Install PyTorch FIRST (before other packages)
+#    macOS (CPU): pip install torch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2
+#    Linux (CUDA 11.8): pip install torch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 --index-url https://download.pytorch.org/whl/cu118
+#
+# 2. Some packages may require system dependencies (cmake, etc.)
+# 3. torch-scatter may fail on macOS - see SETUP_VENV.md for alternatives
+# 4. OpenBabel may need system installation via Homebrew/conda
+
+# Core PyTorch
+# IMPORTANT: Install PyTorch FIRST before other packages!
+# For macOS (CPU): Already included below
+# For Linux with CUDA: Comment out below and install manually with CUDA index URL
+torch==2.0.1
+torchvision==0.15.2
+torchaudio==2.0.2
+
+# PyTorch Lightning
+pytorch-lightning==1.8.4
+
+# ML/DL utilities
+wandb==0.18.2  # Updated from ATOMICA setup_env.sh (was 0.13.1)
+torchmetrics==1.4.2
+tensorboard==2.18.0  # From ATOMICA setup_env.sh
+e3nn==0.5.1  # From ATOMICA setup_env.sh (note: possibly not compatible with e3nn > 0.5.4)
+
+# Scientific computing
+numpy==1.26.4
+scipy==1.13.1
+pandas==2.2.2
+
+# PyTorch extensions (INSTALL SEPARATELY AFTER PyTorch)
+# torch-scatter and torch-cluster MUST be installed AFTER PyTorch is installed
+# Commented out here - install manually after PyTorch (see instructions below)
+# torch-scatter==2.1.2
+# torch-cluster  # From ATOMICA setup_env.sh (install from PyG wheels)
+
+# Chemistry libraries
+# Note: RDKit on pip is rdkit-pypi (different from conda rdkit)
+rdkit-pypi==2022.9.5
+biopython==1.84  # Updated from ATOMICA setup_env.sh (was 1.79)
+biotite==0.40.0  # From ATOMICA setup_env.sh (note: newer versions available, but ATOMICA uses 0.40.0)
+atom3d  # From ATOMICA setup_env.sh
+
+# OpenBabel - Use openbabel-wheel for pip installation
+# Note: conda package is openbabel=3.1.1, pip package is openbabel-wheel with patch versions
+# For full functionality, may need conda: conda install -c conda-forge openbabel=3.1.1
+openbabel-wheel>=3.1.1.20
+
+# Data processing
+pyarrow>=11.0.0,<15.0.0
+
+# Visualization
+imageio==2.21.2
+seaborn==0.13.2
+matplotlib  # From ATOMICA setup_env.sh
+plotly  # From ATOMICA setup_env.sh
+umap-learn  # From ATOMICA setup_env.sh
+
+# Utilities
+networkx==3.3
+tqdm==4.66.5
+# Note: conda 'yaml=0.2.5' maps to 'pyyaml' on pip, but version numbers differ
+# conda yaml 0.2.5 is a wrapper package; using compatible pyyaml version for Python 3.10
+pyyaml>=6.0,<7.0.0
+protobuf>=3.20.0,<4.0.0
+# ATOMICA dependencies
+orjson>=3.10,<4.0.0
+
+# ADMET-AI (already a pip package)
+admet-ai
+
+# ============================================================================
+# POST-INSTALLATION: Install torch-scatter and torch-cluster separately
+# ============================================================================
+# After installing the above packages, run:
+#
+# Option 1 (Recommended): Disable build isolation (allows build to see installed torch)
+#   pip install torch-scatter==2.1.2 --no-build-isolation
+#   pip install torch-cluster --no-build-isolation
+#
+# Option 2: Try pre-built wheels with build isolation disabled
+#   pip install torch-scatter -f https://data.pyg.org/whl/torch-2.0.0+cpu.html --no-build-isolation
+#   pip install torch-cluster -f https://data.pyg.org/whl/torch-2.0.0+cpu.html --no-build-isolation
+#
+# Option 3: Install from PyG wheels (from ATOMICA setup_env.sh)
+#   pip install torch_scatter torch_cluster --find-links https://pytorch-geometric.com/whl/torch-2.1.1+cu118.html
+#   (Note: For CPU/macOS, use appropriate torch version in URL)
+#
+# Option 4: Use conda (if available - handles dependencies best)
+#   conda install -c pyg pytorch-scatter=2.1.2 pytorch-cluster
+#
+# Option 5: Skip if only doing inference (some features may not work)
+#   # torch-scatter and torch-cluster are optional for basic functionality
