@@ -1,5 +1,10 @@
 import argparse
 from pathlib import Path
+import sys
+import os
+
+# Ensure root is in path for ATOMICA imports (must be before importing utils)
+sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 import numpy as np
 import torch
@@ -17,11 +22,6 @@ from lightning_modules import LigandPocketDDPM
 from constants import FLOAT_TYPE, INT_TYPE
 from analysis.molecule_builder import build_molecule, process_molecule
 from analysis.metrics import MoleculeProperties
-
-import sys
-import os
-# Ensure root is in path for ATOMICA imports
-sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from ATOMICA.models.prediction_model import PredictionModel
 from ATOMICA.data.pdb_utils import VOCAB

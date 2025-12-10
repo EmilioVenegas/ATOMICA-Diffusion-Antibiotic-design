@@ -1,5 +1,10 @@
 import argparse
 from pathlib import Path
+import sys
+import os
+
+# Ensure root is in path for ATOMICA imports (must be before importing utils)
+sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 import torch
 from openbabel import openbabel
@@ -7,11 +12,6 @@ openbabel.obErrorLog.StopLogging()  # suppress OpenBabel messages
 
 import utils
 from lightning_modules import LigandPocketDDPM
-
-import sys
-import os
-# Ensure root is in path for ATOMICA imports
-sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from ATOMICA.models.prediction_model import PredictionModel
 

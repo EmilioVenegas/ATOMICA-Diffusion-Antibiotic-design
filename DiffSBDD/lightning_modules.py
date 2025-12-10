@@ -41,25 +41,34 @@ class LigandPocketDDPM(pl.LightningModule):
             datadir,
             batch_size,
             lr,
-            adapter_lr,
-            freeze_backbone,
-            egnn_params: Namespace,
-            diffusion_params,
-            num_workers,
-            augment_noise,
-            augment_rotation,
-            clip_grad,
-            eval_epochs,
-            eval_params,
-            visualize_sample_epoch,
-            visualize_chain_epoch,
-            auxiliary_loss,
-            loss_params,
-            mode,
-            node_histogram,
+            adapter_lr=None,
+            freeze_backbone=False,
+            egnn_params: Namespace=None,
+            diffusion_params=None,
+            num_workers=None,
+            augment_noise=None,
+            augment_rotation=None,
+            clip_grad=None,
+            eval_epochs=None,
+            eval_params=None,
+            visualize_sample_epoch=None,
+            visualize_chain_epoch=None,
+            auxiliary_loss=None,
+            loss_params=None,
+            mode=None,
+            node_histogram=None,
             pocket_representation='CA',
             virtual_nodes=False
     ):
+        # Handle defaults for backward compatibility with older checkpoints
+        # These parameters were added later, so older checkpoints won't have them
+        if adapter_lr is None:
+            adapter_lr = lr * 0.01 if lr is not None else 1e-4  # Default to 1% of base LR
+        if freeze_backbone is None:
+            freeze_backbone = False
+        
+        # All other parameters should be provided (either from checkpoint or training)
+        # PyTorch Lightning will pass hyperparameters from checkpoint as kwargs
         super(LigandPocketDDPM, self).__init__()
         self.save_hyperparameters()
 
