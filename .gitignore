@@ -54,3 +54,7 @@ DiffSBDD/equivariant_diffusion/__init__.py
 demo_outputs/
 outputs/
 scripts/eval/outputs/
+
+# Backup/saved files
+*_saved.py
+3pbq_evaluation/inputs/chembl.sdf.gz
