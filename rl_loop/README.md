@@ -20,6 +20,7 @@ rl_loop/
 ├── mock_generate_ligands.py # Utility for testing without DiffSBDD
 ├── tanimoto_similarity.py   # Diversity analysis using Tanimoto similarity
 ├── reos_filter.py           # REOS filter for drug-likeness
+├── drugbank_reference.py    # Compare ligands against DrugBank reference set
 ├── test_rl_loop.py          # Test suite for RL loop
 ├── INSTALLATION.md          # Installation instructions
 ├── QUICKSTART.md            # Quick start guide
@@ -30,6 +31,8 @@ rl_loop/
 └── results/                 # Scored output CSV files and SDF exports
     ├── .gitkeep
     └── generated_from_refactor_scored.csv  # Example scored results
+└── plots/                   # DrugBank reference comparison plots
+    └── .gitkeep
 
 
 Note:
@@ -229,6 +232,105 @@ python rl_loop/reos_filter.py \
 - Formal charge: -2 to +2
 - Rotatable bonds: 0-8
 - Heavy atoms: 15-50
+
+### DrugBank Reference Comparison
+
+**`drugbank_reference.py`** - Compare generated ligands against DrugBank reference set (2,579 approved drugs)
+
+This script uses ADMET-AI's built-in plotting functionality to visualize how generated molecules compare to known approved drugs in ADMET property space. The plots show:
+- **Blue cloud**: DrugBank reference drugs (all 2,579 or filtered by ATC code)
+- **Red stars**: Your generated/experimental molecules
+- **Marginal histograms**: Distribution of each property
+
+# Compare against all DrugBank drugs
+python rl_loop/drugbank_reference.py \
+    --input rl_loop/results/generated_from_refactor_scored.csv \
+    --x_property "Human Intestinal Absorption" \
+    --y_property "Clinical Toxicity" \
+    --output rl_loop/plots/hia_vs_clintox_all.svg
+
+# Compare against antibiotics only (ATC J01)
+python rl_loop/drugbank_reference.py \
+    --input rl_loop/results/generated_from_refactor_scored.csv \
+    --atc_filter J01 \
+    --x_property "Human Intestinal Absorption" \
+    --y_property "Clinical Toxicity" \
+    --output rl_loop/plots/hia_vs_clintox_antibiotics.svg
+
+# Compare bioavailability vs hERG block
+python rl_loop/drugbank_reference.py \
+    --input rl_loop/results/generated_from_refactor_scored.csv \
+    --x_property "Oral Bioavailability" \
+    --y_property "hERG Block" \
+    --output rl_loop/plots/bioavailability_vs_herg.svg
+
+**Options:**
+- `--input, -i` - Input scored CSV file from `RL_loop.py` (required)
+- `--x_property` - ADMET property name for x-axis (required)
+- `--y_property` - ADMET property name for y-axis (required)
+- `--output, -o` - Output plot path (SVG format recommended, required)
+- `--atc_filter` - Optional ATC code prefix to filter DrugBank (e.g., "J01" for antibiotics)
+- `--quiet, -q` - Suppress progress messages
+
+**ADMET Property Names:**
+- Androgen Receptor (Ligand Binding Domain)
+  Aqueous Solubility
+  Aromatase
+  Aryl Hydrocarbon Receptor
+  Blood-Brain Barrier Penetration
+  CYP1A2 Inhibition
+  CYP2C19 Inhibition
+  CYP2C9 Inhibition
+  CYP2C9 Substrate
+  CYP2D6 Inhibition
+  CYP2D6 Substrate
+  CYP3A4 Inhibition
+  CYP3A4 Substrate
+  Carcinogenicity
+  Cell Effective Permeability
+  Clinical Toxicity
+  Drug Clearance (Hepatocyte)
+  Drug Clearance (Microsome)
+  Drug Induced Liver Injury
+  Estrogen Receptor (Full Length)
+  Estrogen Receptor (Ligand Binding Domain)
+  Half Life
+  Heat Shock Factor Response Element
+  Human Intestinal Absorption
+  Hydration Free Energy
+  Hydrogen Bond Acceptors
+  Hydrogen Bond Donors
+  Lipinski Rule of 5
+  Lipophilicity
+  LogP
+  Mitochondrial Membrane Potential
+  Molecular Weight
+  Mutagenicity
+  Nuclear Factor (Erythroid-Derived 2)-Like 2/Antioxidant Responsive Element
+  Oral Bioavailability
+  P-glycoprotein Inhibition
+  PAMPA Permeability
+  Peroxisome Proliferator-Activated Receptor Gamma
+  Plasma Protein Binding Rate
+  Quantitative Estimate of Druglikeness (QED)
+  Skin Reaction
+  Stereo Centers
+  Topological Polar Surface Area (TPSA)
+  Tumor Protein p53
+  Volume of Distribution at Steady State
+  hERG Blocking
+
+You can also use the exact CSV column names (e.g., `HIA_Hou`, `ClinTox`) directly.
+
+**ATC Code Examples:**
+- `J01` - Antibacterials for systemic use
+- `L01` - Antineoplastic agents
+- `C09` - Agents acting on the renin-angiotensin system
+- `A10` - Drugs used in diabetes
+
+**Output:**
+- SVG plot file showing DrugBank reference (blue) vs. generated ligands (red)
+- Same styling and marginal histograms as ADMET-AI web interface
 
 ### Complete Pipeline Example
 
