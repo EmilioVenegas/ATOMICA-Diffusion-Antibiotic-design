@@ -268,17 +268,21 @@ def run_boltz_scoring(
     yamls_dir_str = str(Path(yamls_dir).resolve())
     output_dir_str = str(output_dir.resolve())
     
-    # Use poetry run boltz if pyproject.toml exists (we're in a poetry project)
+    # Use poetry run boltz if pyproject.toml exists and poetry is available
     import os
+    import shutil
     from pathlib import Path as PathLib
     
     # Check if pyproject.toml exists in current or parent directories
     current_dir = PathLib.cwd()
-    has_poetry = (current_dir / "pyproject.toml").exists() or \
-                 (current_dir.parent / "pyproject.toml").exists() or \
-                 (current_dir.parent.parent / "pyproject.toml").exists()
+    has_pyproject = (current_dir / "pyproject.toml").exists() or \
+                    (current_dir.parent / "pyproject.toml").exists() or \
+                    (current_dir.parent.parent / "pyproject.toml").exists()
     
-    if has_poetry:
+    # Check if poetry command is available
+    poetry_available = shutil.which("poetry") is not None
+    
+    if has_pyproject and poetry_available:
         cmd = ["poetry", "run", "boltz", "predict", yamls_dir_str, 
                "--accelerator", accelerator, 
                "--use_msa_server", 

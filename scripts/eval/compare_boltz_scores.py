@@ -187,6 +187,11 @@ def main():
         default="molecule_id",
         help="Column name for molecule identifiers"
     )
+    parser.add_argument(
+        "--skip-boltz",
+        action="store_true",
+        help="Skip running Boltz and extract scores from existing results directories"
+    )
     
     args = parser.parse_args()
     
@@ -212,42 +217,60 @@ def main():
     from scripts.eval.boltz_scoring import make_yamls_from_protein_and_csv
     from scripts.eval.get_protein_sequence import get_protein_sequence_from_pdb
     
-    # Get protein sequence
-    protein_sequence = get_protein_sequence_from_pdb(args.protein_pdb)
-    
-    # Generate YAMLs and run scoring for dataset A
-    print(f"Running Boltz scoring for {args.name_a}...")
-    run_boltz_scoring(
-        ligands_csv_path=args.csv_a,
-        output_dir=output_dir_a,
-        yamls_dir=yamls_dir_a,
-        protein_pdb_path=args.protein_pdb,
-        accelerator=args.accelerator,
-        target_name=args.name_a.lower(),
-        smiles_col=args.smiles_col,
-        name_col=args.name_col,
-    )
-    
-    # Get YAML paths after generation
-    yaml_paths_a = list(yamls_dir_a.glob("*.yaml"))
-    print(f"✓ {args.name_a} scoring complete\n")
-    
-    # Generate YAMLs and run scoring for dataset B
-    print(f"Running Boltz scoring for {args.name_b}...")
-    run_boltz_scoring(
-        ligands_csv_path=args.csv_b,
-        output_dir=output_dir_b,
-        yamls_dir=yamls_dir_b,
-        protein_pdb_path=args.protein_pdb,
-        accelerator=args.accelerator,
-        target_name=args.name_b.lower(),
-        smiles_col=args.smiles_col,
-        name_col=args.name_col,
-    )
-    
-    # Get YAML paths after generation
-    yaml_paths_b = list(yamls_dir_b.glob("*.yaml"))
-    print(f"✓ {args.name_b} scoring complete\n")
+    if args.skip_boltz:
+        print("⚠ Skipping Boltz scoring - extracting from existing results...")
+        # Check that results directories exist
+        if not output_dir_a.exists():
+            raise FileNotFoundError(f"Results directory not found: {output_dir_a}. Cannot skip Boltz scoring.")
+        if not output_dir_b.exists():
+            raise FileNotFoundError(f"Results directory not found: {output_dir_b}. Cannot skip Boltz scoring.")
+        
+        # Get YAML paths (they should already exist)
+        yaml_paths_a = list(yamls_dir_a.glob("*.yaml")) if yamls_dir_a.exists() else []
+        yaml_paths_b = list(yamls_dir_b.glob("*.yaml")) if yamls_dir_b.exists() else []
+        print(f"✓ Found {len(yaml_paths_a)} YAML files for {args.name_a}")
+        print(f"✓ Found {len(yaml_paths_b)} YAML files for {args.name_b}\n")
+    else:
+        # Import functions
+        from scripts.eval.boltz_scoring import make_yamls_from_protein_and_csv
+        from scripts.eval.get_protein_sequence import get_protein_sequence_from_pdb
+        
+        # Get protein sequence
+        protein_sequence = get_protein_sequence_from_pdb(args.protein_pdb)
+        
+        # Generate YAMLs and run scoring for dataset A
+        print(f"Running Boltz scoring for {args.name_a}...")
+        run_boltz_scoring(
+            ligands_csv_path=args.csv_a,
+            output_dir=output_dir_a,
+            yamls_dir=yamls_dir_a,
+            protein_pdb_path=args.protein_pdb,
+            accelerator=args.accelerator,
+            target_name=args.name_a.lower(),
+            smiles_col=args.smiles_col,
+            name_col=args.name_col,
+        )
+        
+        # Get YAML paths after generation
+        yaml_paths_a = list(yamls_dir_a.glob("*.yaml"))
+        print(f"✓ {args.name_a} scoring complete\n")
+        
+        # Generate YAMLs and run scoring for dataset B
+        print(f"Running Boltz scoring for {args.name_b}...")
+        run_boltz_scoring(
+            ligands_csv_path=args.csv_b,
+            output_dir=output_dir_b,
+            yamls_dir=yamls_dir_b,
+            protein_pdb_path=args.protein_pdb,
+            accelerator=args.accelerator,
+            target_name=args.name_b.lower(),
+            smiles_col=args.smiles_col,
+            name_col=args.name_col,
+        )
+        
+        # Get YAML paths after generation
+        yaml_paths_b = list(yamls_dir_b.glob("*.yaml"))
+        print(f"✓ {args.name_b} scoring complete\n")
     
     # Collect scores
     print("Collecting scores...")
