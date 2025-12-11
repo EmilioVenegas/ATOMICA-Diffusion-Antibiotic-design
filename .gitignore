@@ -58,3 +58,15 @@ scripts/eval/outputs/
 # Backup/saved files
 *_saved.py
 3pbq_evaluation/inputs/chembl.sdf.gz
+
+# Data files (excluding .csv and .pdb)
+# Note: .csv and .pdb files will still be tracked by default
+*.sdf
+*.sdf.gz
+*.pdbqt
+*.cif
+*.npz
+*.pkl
+*.fasta
+*.fa
+*.zip
