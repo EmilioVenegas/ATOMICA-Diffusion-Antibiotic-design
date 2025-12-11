@@ -1,0 +1,2 @@
+molecule_id,smiles,mw,alogp,hbd,hba
+generated_mol_0001,CO[S@@]1(O)N[C@@H](C(=O)[C@H]2[C@H](CS)CCO[C@H]2C)c2ncc3c(c21)CNC[S@@H]3N1CCC(=O)C1,516.71,1.99,5,10
