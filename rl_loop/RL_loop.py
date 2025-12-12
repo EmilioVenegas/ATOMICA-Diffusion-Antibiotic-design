@@ -22,6 +22,11 @@ from rdkit.Chem import Descriptors
 
 # Try to import ADMET-AI
 try:
+    # Minimal patch for PyTorch 2.6+ weights_only issue
+    import torch
+    _original_torch_load = torch.load
+    torch.load = lambda *args, **kwargs: _original_torch_load(*args, **{**kwargs, 'weights_only': False} if 'weights_only' not in kwargs else kwargs)
+    
     from admet_ai import ADMETModel
     ADMET_AVAILABLE = True
 except ImportError:
