@@ -172,6 +172,9 @@ if __name__ == "__main__":
             if "parameter group" in str(e) or "optimizer" in str(e).lower():
                 print(f"Optimizer state incompatible with current model ({e}). "
                       f"Resuming from weights only (epoch resets to 0).")
+                # PL caches the checkpoint on the connector after the first attempt;
+                # clear it so the fallback fit doesn't try to restore optimizer again.
+                trainer._checkpoint_connector._loaded_checkpoint = None
                 trainer.fit(model=pl_module)
             else:
                 raise
