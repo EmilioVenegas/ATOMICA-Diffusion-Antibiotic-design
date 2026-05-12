@@ -164,19 +164,22 @@ if __name__ == "__main__":
             print(f"New parameters (randomly initialised): {missing_keys[:5]}"
                   + (f" ... +{len(missing_keys)-5} more" if len(missing_keys) > 5 else ""))
 
-        # Try full resume (restores epoch + optimizer). Falls back to weights-only
-        # if optimizer param groups changed (e.g. freeze_backbone toggled).
-        try:
-            trainer.fit(model=pl_module, ckpt_path=ckpt_path)
-        except (ValueError, RuntimeError) as e:
-            if "parameter group" in str(e) or "optimizer" in str(e).lower():
-                print(f"Optimizer state incompatible with current model ({e}). "
-                      f"Resuming from weights only (epoch resets to 0).")
-                # PL caches the checkpoint on the connector after the first attempt;
-                # clear it so the fallback fit doesn't try to restore optimizer again.
-                trainer._checkpoint_connector._loaded_checkpoint = None
-                trainer.fit(model=pl_module)
-            else:
-                raise
+        if missing_keys:
+            # Architecture mismatch (e.g. loading pretrained backbone into ATOMICA model).
+            # Weights are already loaded above; just start fresh from epoch 0.
+            print("Architecture mismatch detected — starting from epoch 0 with loaded weights.")
+            trainer.fit(model=pl_module)
+        else:
+            # Exact weight match — try full resume (epoch + optimizer).
+            # Falls back gracefully if optimizer param groups differ.
+            try:
+                trainer.fit(model=pl_module, ckpt_path=ckpt_path)
+            except (ValueError, RuntimeError) as e:
+                if "parameter group" in str(e) or "optimizer" in str(e).lower():
+                    print(f"Optimizer state incompatible — resuming from epoch 0 with loaded weights.")
+                    trainer._checkpoint_connector._loaded_checkpoint = None
+                    trainer.fit(model=pl_module)
+                else:
+                    raise
     else:
         trainer.fit(model=pl_module)
