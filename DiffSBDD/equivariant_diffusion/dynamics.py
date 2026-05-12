@@ -25,6 +25,14 @@ class SE3EquivariantCrossAttention(nn.Module):
         self.out_proj = nn.Linear(hidden_nf, ligand_nf)
         self.scale = hidden_nf ** -0.5
 
+        # Timestep-gated output scale: t → gate ∈ (0,1)
+        # Learns how much ATOMICA guidance to apply at each noise level.
+        self.gate = nn.Sequential(
+            nn.Linear(1, 16), nn.SiLU(), nn.Linear(16, 1), nn.Sigmoid()
+        )
+        # Init gate to ~0.5 so adapter starts at half-scale
+        nn.init.zeros_(self.gate[2].bias)
+
         nn.init.xavier_uniform_(self.q_proj.weight, gain=0.1)
         nn.init.xavier_uniform_(self.k_proj.weight, gain=0.1)
         nn.init.xavier_uniform_(self.v_proj.weight, gain=0.1)
@@ -37,6 +45,7 @@ class SE3EquivariantCrossAttention(nn.Module):
         if torch.isnan(h_p).any(): h_p = torch.nan_to_num(h_p)
 
         # 2. Projections — concatenate timestep embedding to query
+        t_per_atom = None
         if t is not None:
             if t.numel() == 1:
                 t_per_atom = t.view(1, 1).expand(h_l.shape[0], 1).float()
@@ -64,12 +73,14 @@ class SE3EquivariantCrossAttention(nn.Module):
             attn = torch.nan_to_num(attn, nan=0.0)
         attn = attn * batch_mask.float()
 
-        # 4. Feature Updates Only
+        # 4. Feature update gated by timestep
         h_update_internal = torch.matmul(attn, v)
         h_update = self.out_proj(h_update_internal)
 
-        # REMOVED: Coordinate calculation (center_p, vel)
-        
+        if t_per_atom is not None:
+            gate = self.gate(t_per_atom)          # [n_atoms, 1], values in (0,1)
+            h_update = h_update * gate
+
         if torch.isnan(h_update).any():
             h_update = torch.nan_to_num(h_update)
 
