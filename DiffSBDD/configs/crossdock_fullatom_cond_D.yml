@@ -1,4 +1,4 @@
-run_name: 'condC_timestep_adaptive_r0'
+run_name: 'condD_lora_r0'
 logdir: './my_logs'
 wandb_params:
   mode: 'offline'
@@ -14,12 +14,12 @@ num_sanity_val_steps: 0
 mode: 'pocket_conditioning'
 pocket_representation: 'full-atom'
 
-# --- Condition C: adapter-only, backbone frozen, timestep-adaptive t-embedding ---
+# --- Condition D: LoRA fine-tuning of backbone + ATOMICA adapter ---
 batch_size: 2
 accumulate_grad_batches: 16       # effective batch = 32
-lr: 1.0e-5                        # backbone LR (ignored: backbone is frozen)
+lr: 1.0e-5
 adapter_lr: 1.0e-4
-freeze_backbone: True
+freeze_backbone: False            # backbone unfrozen; LoRA controls capacity
 n_epochs: 50
 early_stop_patience: 5
 val_check_interval: 200
@@ -56,9 +56,9 @@ egnn_params:
   aggregation_method: 'sum'
   normalization_factor: 100
   atomica_nf: 32
-  lora_rank: 0                    # no LoRA for condition C (isolated to Phase 2)
+  lora_rank: 8                    # LoRA rank for EGNN linear layers
   lora_alpha: 16
-  timestep_adaptive: True         # Phase 1: t-embedding in cross-attn query
+  timestep_adaptive: True
   gradient_checkpointing: True
 
 diffusion_params:
