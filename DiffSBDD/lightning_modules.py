@@ -210,8 +210,7 @@ class LigandPocketDDPM(pl.LightningModule):
                 if not param.requires_grad:
                     continue
                     
-                # Adapter layers: layernorm and cross_attn
-                if 'atomica_norm' in name or 'cross_attn' in name:
+                if 'atomica_norm' in name or 'cross_attn' in name or 'adapter_scale' in name:
                     adapter_params.append(param)
                 else:
                     backbone_params.append(param)

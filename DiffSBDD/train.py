@@ -146,35 +146,24 @@ if __name__ == "__main__":
 
     if ckpt_path is not None:
         print(f"Loading pre-trained weights from: {ckpt_path}")
-        
-        # Check if we are doing transfer learning (missing keys expected) or resuming
-        checkpoint = torch.load(ckpt_path, map_location='cpu')
+        checkpoint = torch.load(ckpt_path, map_location='cpu', weights_only=False)
         state_dict = checkpoint['state_dict']
-        
-        # Try to load strict to see if it matches
+
+        missing_keys, unexpected_keys = pl_module.load_state_dict(state_dict, strict=False)
+        if missing_keys:
+            print(f"New parameters (randomly initialised): {missing_keys[:5]}"
+                  + (f" ... +{len(missing_keys)-5} more" if len(missing_keys) > 5 else ""))
+
+        # Try full resume (restores epoch + optimizer). Falls back to weights-only
+        # if optimizer param groups changed (e.g. freeze_backbone toggled).
         try:
-            pl_module.load_state_dict(state_dict, strict=True)
-            is_exact_match = True
-        except RuntimeError:
-            is_exact_match = False
-            
-        if is_exact_match:
-            print("Checkpoint matches model architecture exactly. Resuming training state (epochs, optimizer)...")
             trainer.fit(model=pl_module, ckpt_path=ckpt_path)
-        else:
-            print("Transfer learning mode: loading backbone weights, initializing new layers randomly")
-            # Load state dict with strict=False to allow missing keys (ATOMICA layers)
-            missing_keys, unexpected_keys = pl_module.load_state_dict(
-                state_dict, strict=False)
-            
-            if missing_keys:
-                print(f"Initialized {len(missing_keys)} new parameters (ATOMICA layers):")
-                for key in missing_keys[:5]:  # Show first 5
-                    print(f"  - {key}")
-                if len(missing_keys) > 5:
-                    print(f"  ... and {len(missing_keys) - 5} more")
-            
-            # Train from epoch 0 (transfer learning)
-            trainer.fit(model=pl_module)
+        except (ValueError, RuntimeError) as e:
+            if "parameter group" in str(e) or "optimizer" in str(e).lower():
+                print(f"Optimizer state incompatible with current model ({e}). "
+                      f"Resuming from weights only (epoch resets to 0).")
+                trainer.fit(model=pl_module)
+            else:
+                raise
     else:
         trainer.fit(model=pl_module)
