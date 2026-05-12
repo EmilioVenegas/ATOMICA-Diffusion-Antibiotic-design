@@ -105,8 +105,7 @@ class EGNNDynamics(nn.Module):
                 act_fn=act_fn
             )
             
-            # Scale factor to reduce adapter contribution (prevents gradient explosion)
-            self.adapter_scale = 0.1
+            self.adapter_scale = nn.Parameter(torch.tensor([0.1]))
         else:
             self.atomica_norm = None
             self.cross_attn = None
@@ -216,13 +215,8 @@ class EGNNDynamics(nn.Module):
                 mask_p=mask_residues,
                 t=t,
             )
-            h_atoms = h_atoms + self.adapter_scale * h_update
-            # Check outputs for NaN
             if torch.isnan(h_update).any():
-                print(f"WARNING: NaN in cross-attention output (h_update)")
                 h_update = torch.nan_to_num(h_update, nan=0.0)
-            
-            # Apply scaled update to prevent gradient explosion
             h_atoms = h_atoms + self.adapter_scale * h_update
 
         # combine the two node types
