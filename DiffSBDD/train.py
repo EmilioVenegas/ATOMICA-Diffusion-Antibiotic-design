@@ -133,10 +133,20 @@ if __name__ == "__main__":
         mode="min",
     )
 
+    early_stop_patience = getattr(args, 'early_stop_patience', 0)
+    callbacks = [checkpoint_callback]
+    if early_stop_patience > 0:
+        callbacks.append(pl.callbacks.EarlyStopping(
+            monitor="loss/val",
+            patience=early_stop_patience,
+            mode="min",
+            verbose=True,
+        ))
+
     trainer = pl.Trainer(
         max_epochs=args.n_epochs,
         logger=logger,
-        callbacks=[checkpoint_callback],
+        callbacks=callbacks,
         enable_progress_bar=args.enable_progress_bar,
         num_sanity_val_steps=args.num_sanity_val_steps,
         accelerator='gpu', devices=args.gpus,

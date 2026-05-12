@@ -21,6 +21,7 @@ lr: 1.0e-5                        # backbone LR (ignored: backbone is frozen)
 adapter_lr: 1.0e-4                # adapter LR — higher than backbone to compensate
 freeze_backbone: True
 n_epochs: 50
+early_stop_patience: 5            # stop if loss/val doesn't improve for 5 val checks
 val_check_interval: 200           # validate every 200 steps (not every epoch)
 
 noise_factor: 1.0
