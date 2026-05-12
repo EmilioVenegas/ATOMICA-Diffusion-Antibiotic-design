@@ -8,31 +8,47 @@ import numpy as np
 
 
 class SE3EquivariantCrossAttention(nn.Module):
+    T_EMBED_DIM = 16  # timestep embedding size (matches saved checkpoints)
+
     def __init__(self, ligand_nf, pocket_nf, hidden_nf=64, act_fn=nn.SiLU()):
         super().__init__()
-        self.q_proj = nn.Linear(ligand_nf, hidden_nf)
+        # Timestep embedding: scalar t → T_EMBED_DIM
+        self.t_embed = nn.Sequential(
+            nn.Linear(1, self.T_EMBED_DIM),
+            nn.SiLU(),
+            nn.Linear(self.T_EMBED_DIM, self.T_EMBED_DIM),
+        )
+        query_dim = ligand_nf + self.T_EMBED_DIM
+        self.q_proj = nn.Linear(query_dim, hidden_nf)
         self.k_proj = nn.Linear(pocket_nf, hidden_nf)
         self.v_proj = nn.Linear(pocket_nf, hidden_nf)
         self.out_proj = nn.Linear(hidden_nf, ligand_nf)
         self.scale = hidden_nf ** -0.5
-        
-        # Internal projections
+
         nn.init.xavier_uniform_(self.q_proj.weight, gain=0.1)
         nn.init.xavier_uniform_(self.k_proj.weight, gain=0.1)
         nn.init.xavier_uniform_(self.v_proj.weight, gain=0.1)
-        
-        # Zero init output
         nn.init.zeros_(self.out_proj.weight)
         nn.init.zeros_(self.out_proj.bias)
 
-    # REMOVED: x_l and x_p from arguments
-    def forward(self, h_l, h_p, mask_l, mask_p):
+    def forward(self, h_l, h_p, mask_l, mask_p, t=None):
         # 1. Check Embeddings for NaNs
         if torch.isnan(h_l).any(): h_l = torch.nan_to_num(h_l)
         if torch.isnan(h_p).any(): h_p = torch.nan_to_num(h_p)
 
-        # 2. Projections
-        q = self.q_proj(h_l)
+        # 2. Projections — concatenate timestep embedding to query
+        if t is not None:
+            if t.numel() == 1:
+                t_per_atom = t.view(1, 1).expand(h_l.shape[0], 1).float()
+            else:
+                # t is per-molecule; broadcast to per-atom via mask_l
+                t_per_atom = t[mask_l].view(-1, 1).float()
+            t_emb = self.t_embed(t_per_atom)
+            h_l_query = torch.cat([h_l, t_emb], dim=-1)
+        else:
+            h_l_query = torch.cat([h_l, torch.zeros(h_l.shape[0], self.T_EMBED_DIM,
+                                                     device=h_l.device, dtype=h_l.dtype)], dim=-1)
+        q = self.q_proj(h_l_query)
         k = self.k_proj(h_p)
         v = self.v_proj(h_p)
 
@@ -195,9 +211,10 @@ class EGNNDynamics(nn.Module):
             
             h_update = self.cross_attn(
                 h_l=h_atoms,
-                h_p=h_atomica_norm,  # Use normalized embeddings
+                h_p=h_atomica_norm,
                 mask_l=mask_atoms,
-                mask_p=mask_residues
+                mask_p=mask_residues,
+                t=t,
             )
             h_atoms = h_atoms + self.adapter_scale * h_update
             # Check outputs for NaN

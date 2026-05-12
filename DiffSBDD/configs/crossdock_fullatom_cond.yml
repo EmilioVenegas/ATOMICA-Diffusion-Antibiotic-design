@@ -1,7 +1,7 @@
 run_name: 'SE3-cond-full-atomica-v8'
 logdir: './my_logs'
 wandb_params:
-  mode: 'online'
+  mode: 'offline'
   entity: 'emiliovenegas10-tecnol-gico-de-monterrey'
   group: 'atomica-crossdocked'
   project: 'atomica-enhanced'

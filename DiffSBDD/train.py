@@ -1,10 +1,14 @@
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 import argparse
 from argparse import Namespace
 from pathlib import Path
 import warnings
 
 import torch
-torch.set_float32_matmul_precision('medium')
 torch.set_float32_matmul_precision('medium')
 import pytorch_lightning as pl
 import yaml

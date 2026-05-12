@@ -1,56 +1,62 @@
-# Byte-compiled / optimized / DLL files
+# ── Python runtime artifacts ─────────────────────────────────────────────────
 __pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
 
-outputs_embedded.pt/
+# ── Generated molecules / docking outputs ────────────────────────────────────
+*.sdf
+*.pdbqt
+*.mol2
+generated_ligands*.sdf
+docking/
+results/
+
+# ── Molecular structure files at repo root (example/scratch) ─────────────────
+*.pdb
+*.sdf
+
+# ── ML data, checkpoints, logs ───────────────────────────────────────────────
 data/
-PL.jsonl.gz
-demo_outputs/
-outputs/
-scripts/eval/outputs/
-PLjsonl.gz
 my_logs/
-analyse.py
-analyze_processed_data.py
-create_histogram.py
-create_histogram.py
-analyze_atomica_dataset.py
-analyze_processed_folder.py
-verification.py
-PL_json_analysis.py
-inspect_histogram.py
-center_data.py
-check_data.py
-DiffSBDD/equivariant_diffusion/geometric_losses.py
-analyze_dataset_statistics.py
-create_2d_histogram.py
-plot_histogram.py
-size_distribution_heatmap.png
-create_2d_histogram.py
-DiffSBDD/analyze_molecule.py
-DiffSBDD/analyze_training.py
-DiffSBDD/diagnose_connectivity.py
-DiffSBDD/test_bond_detection.py
-DiffSBDD/configs/atomica_train_dryrun.yml
-verification_results/
-DiffSBDD/process_crossdock_split.py
-fetch_antibiotic_pdbs.py
-fetch_bacterial_pdbs.py
-fetch_expanded_antibiotic_pdbs.py
-identify_pdb_complexes.py
-inspect_lmdb.py
-inspect_split.py
-DiffSBDD/tests/test_interaction_block.py
-DiffSBDD/tests/test_dynamics.py
+checkpoints/
+*.ckpt
+*.pt
+*.pkl
+
+# ── Large compressed data ─────────────────────────────────────────────────────
+*.lmdb
+*.lmdb-lock
+*.gz
+*.npy
+*.jsonl.gz
+
+# ── One-off analysis / scratch scripts ───────────────────────────────────────
+sample_and_visualize.py
 verify_sampling.py
-process_new_antibiotic_data.py
+create_2d_histogram.py
+extract_smiles.py
+create_expert_split.py
+
+# ── Misc output / scratch files ──────────────────────────────────────────────
+outputs/
+outputs_embedded.pt/
+demo_outputs/
+verification_results/
+*.png
+*.log
+*.json
 pdb_complex_analysis.json
 pdb_analysis.log
-DiffSBDD/configs/atomica_train_connectivity.yml
-DiffSBDD/calculate_statistics.py
-affinity_info.pkl
-expert_split.pt
-crossdocked_fullatom_cond.ckpt
-sample_and_visualize.py
-DiffSBDD/__init__.py
 
-DiffSBDD/equivariant_diffusion/__init__.py
+# ── Environment / IDE ─────────────────────────────────────────────────────────
+.env
+.venv/
+*.egg
+.DS_Store
+.idea/
+.vscode/
