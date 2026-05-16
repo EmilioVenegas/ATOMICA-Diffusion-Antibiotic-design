@@ -19,6 +19,14 @@
 
 from rdkit import Chem
 from rdkit.Chem import rdMolDescriptors
+try:
+    from rdkit.Chem.rdFingerprintGenerator import GetMorganGenerator as _GetMorganGenerator
+    _morgan_gen = _GetMorganGenerator(radius=2)
+    def _morgan_fp(mol):
+        return _morgan_gen.GetCountFingerprint(mol)
+except ImportError:
+    def _morgan_fp(mol):
+        return rdMolDescriptors.GetMorganFingerprint(mol, 2)
 import pickle
 
 import math
