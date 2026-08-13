@@ -6,16 +6,38 @@
 |---|---|---|
 | **0** | Is the interface representation geometry-sensitive? | **passed** — `results/phase0/README.md` |
 | **1** | Featurize ATOMICA the way it was pretrained | **done for the scoring path** — `atomica_interface/` |
-| **2** | Does a pose scorer built on it generalise to unseen systems? | **in progress** — benchmark built, head not yet trained |
-| 3 | ATOMICA as a selector over generated molecules | not started |
-| 4 | Interaction hotspot fields | not started |
-| 5 | ATOMICA as sampling guidance | not started |
-| 6 | Distillation to a pocket-only encoder | conditional on 4–5 |
+| **2** | Does a pose scorer built on it generalise to unseen systems? | **resolved: no** — `results/pose_scorer/README.md` |
+| **3** | Interaction hotspot fields | **next** — within-system, which is where the signal lives |
+| 4 | ATOMICA as sampling guidance | after 3; also within-system |
+| 5 | Contact-level scoring architecture | the way to attack cross-system, if pursued |
+| 6 | ATOMICA as a selector over generated molecules | blocked by 2 |
+| 7 | Distillation to a pocket-only encoder | conditional on 3–4 |
 
-Phase 2 is new. It was not in the original plan because the original plan assumed
-the pretrained model could be used as a scorer directly; measurement showed it
-cannot (see below), and everything downstream depends on a scorer that works on a
-pocket it has never seen. It is the near-term line of work.
+## The result that should drive everything from here
+
+Two measurements that look contradictory, and are not:
+
+| | Task | Result |
+|---|---|---|
+| Phase 0 | rank poses **within one pocket** | AUROC 1.000, clash- and size-controlled |
+| Phase 2 | rank poses **across unseen pockets** | 63.9% vs smina 59.7%, p = 0.65 — no better than a 2010 scoring function |
+
+The representation discriminates interaction geometry sharply *inside* a system
+and barely transfers *between* systems. Read as a failure that is discouraging.
+Read as a constraint it is directive, because applications divide cleanly along
+exactly that line:
+
+- **Within-system** — ranking probe placements in one pocket (hotspot fields),
+  steering a denoising trajectory for one target (guidance), comparing poses of
+  one ligand. The Phase 0 regime. Viable.
+- **Cross-system** — a universal scoring function, a transferable selector,
+  conditioning a generator trained over thousands of different pockets. The
+  Phase 2 regime. Not supported by this evidence.
+
+The original conditioning approach was cross-system, which is the harder regime,
+and it was attempted through a featurization that destroyed the signal entirely.
+The near-term work should be within-system, where the measured capability
+actually is.
 
 ## Diagnosis: why the adapter approach could not have worked
 
@@ -135,7 +157,18 @@ path: it builds single-segment `UNK` inputs and calls `atomica_model.infer()` on
 DiffSBDD conditioning cache must be rewritten onto `atomica_interface` first. Until
 then the Phase 3–6 conditioning work cannot be run at all.
 
-## Phase 2 — A pose scorer that generalises across systems (current work)
+## Phase 2 — A pose scorer that generalises across systems — RESOLVED: NO
+
+**Outcome.** On 100 targets (72 solvable, 1674 poses), out-of-fold by target, a
+ridge head reaches 63.9% docking power against smina's 59.7% — 11 targets won,
+8 lost, McNemar p = 0.65. Comparable, not better. Full numbers and the retraction
+of an earlier 22-target result that did not replicate are in
+`results/pose_scorer/README.md`.
+
+The head is far above the 15.7% random floor, so it learns something real that
+transfers. It is simply not competitive with a fast, free, established baseline,
+and the gap between this and Phase 0's within-system result is the finding worth
+carrying forward.
 
 ### Why this exists: the training-free route is insufficient
 
