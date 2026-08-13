@@ -121,6 +121,12 @@ def main():
     p.add_argument("--far_angle", type=float, nargs=2, default=[60.0, 180.0],
                    help="rotation range for the displaced class (deg)")
     p.add_argument("--dist_th", type=float, default=8.0)
+    p.add_argument("--clash_free", action="store_true",
+                   help="reject poses that clash worse than the native pose, so both "
+                        "classes stay physically plausible. Without this the classes are "
+                        "separable by steric overlap alone and the test is trivial.")
+    p.add_argument("--clash_margin", type=float, default=0.3,
+                   help="tolerance below the native min ligand-protein distance (A)")
     p.add_argument("--site_radius", type=float, default=10.0,
                    help="residues within this distance of the NATIVE ligand form the "
                         "fixed binding site used for every pose")
@@ -182,7 +188,7 @@ def main():
         return interface_representation(model, to_batch(data, device)).reshape(-1), data
 
     print("[4/4] encoding perturbed poses")
-    feats, labels, rmsds, sizes = [], [], [], []
+    feats, labels, rmsds, sizes, kept_coords = [], [], [], [], []
     lost_contact = 0
     structure = None
 
@@ -196,11 +202,37 @@ def main():
         + [(args.far_shift, args.far_angle, 0) for _ in range(args.n_poses)]
     )
 
+    # Steric-overlap control. Rigid perturbation drives the ligand into the
+    # protein, so displaced poses clash and become separable on minimum
+    # ligand-protein distance alone -- worth AUROC ~1.0 uncontrolled. Rejecting
+    # poses that clash worse than the crystal pose keeps both classes physically
+    # plausible, so any separation reflects interaction geometry.
+    site_xyz = np.asarray(
+        [a.get_coord() for b in site_blocks for a in b.units], dtype=float
+    )
+
+    def min_contact(c):
+        return float(np.linalg.norm(c[:, None, :] - site_xyz[None, :, :], axis=2).min())
+
+    clash_floor = min_contact(native_coords) - args.clash_margin
+    if args.clash_free:
+        print(f"      native min contact {min_contact(native_coords):.2f} A; "
+              f"rejecting poses below {clash_floor:.2f} A")
+    rejected_clash = 0
+
     for shift, angle, label in jobs:
         if shift is None:  # the native pose itself
             coords, rmsd = native_coords.copy(), 0.0
         else:
             coords, rmsd = perturb(native_coords, rng, shift, angle)
+            if args.clash_free:
+                for _ in range(2000):
+                    if min_contact(coords) >= clash_floor:
+                        break
+                    coords, rmsd = perturb(native_coords, rng, shift, angle)
+                else:
+                    rejected_clash += 1
+                    continue
         try:
             vec, data = encode(coords)
         except ValueError:
@@ -213,6 +245,7 @@ def main():
         labels.append(label)
         rmsds.append(rmsd)
         sizes.append((summarize(data)["n_blocks"], summarize(data)["n_atoms"]))
+        kept_coords.append(coords)
 
     labels = np.asarray(labels)
     feats = np.asarray(feats)
@@ -269,6 +302,15 @@ def main():
         },
         "dropped_lost_contact": lost_contact,
         "fixed_site_blocks": len(site_blocks),
+        "clash_free": bool(args.clash_free),
+        "rejected_for_clash": rejected_clash,
+        "min_contact_auroc": round(
+            max(
+                roc_auc(labels, np.array([min_contact(c) for c in kept_coords])),
+                roc_auc(labels, -np.array([min_contact(c) for c in kept_coords])),
+            ),
+            4,
+        ),
         "size_confound_auroc": size_auroc,
         "record_structure": structure,
         "auroc_near_vs_displaced": round(auroc, 4),
@@ -281,6 +323,10 @@ def main():
     print(f"\nsize confound (block count)    : {size_auroc['block_count']:.3f}  "
           f"(0.5 = composition is constant, as intended)")
     print(f"size confound (atom count)     : {size_auroc['atom_count']:.3f}")
+    _mc = np.array([min_contact(c) for c in kept_coords])
+    print(f"steric confound (min contact)  : "
+          f"{max(roc_auc(labels, _mc), roc_auc(labels, -_mc)):.3f}"
+          f"{'' if args.clash_free else '  <-- run with --clash_free to control this'}")
     print(f"AUROC near-native vs displaced : {auroc:.3f}  (permutation p = {p_value:.4f})")
     print(f"Spearman(repr drift, RMSD)     : {spearman:+.3f}")
     print()

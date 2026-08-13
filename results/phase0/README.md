@@ -13,14 +13,29 @@ every pose. Otherwise a displaced ligand contacts a different number of residues
 and the representation can separate the classes on complex size alone — worth
 AUROC ~0.70 here. With the site fixed, that shortcut measures exactly 0.500.
 
-| Test | displaced RMSD | size confound | AUROC | perm p | Spearman(drift, RMSD) |
-|---|---|---|---|---|---|
-| easy | 4.5–8.3 Å | 0.500 | **1.000** | 0.0005 | +0.855 |
-| hard | 1.1–2.3 Å | 0.500 | **0.999** | 0.0005 | +0.919 |
+Two confounds had to be controlled before the number meant anything.
 
-The hard row is the meaningful one: sub-2 Å is the conventional threshold for a
-"correct" docked pose, and the representation separates that from near-native
-almost perfectly while drifting monotonically with RMSD.
+**Composition.** Re-trimming the pocket to each pose's contacts lets a displaced
+ligand touch a different number of residues, so the representation can separate
+the classes on complex size alone — worth AUROC ~0.70 here. Holding the site
+fixed drives it to 0.500.
+
+**Steric overlap.** Rigid perturbation pushes the ligand into the protein, so
+displaced poses clash. Minimum ligand–protein distance alone then reaches AUROC
+1.000 — matching ATOMICA, and making the test meaningless. `--clash_free`
+rejects poses that clash worse than the crystal pose, keeping both classes
+physically plausible.
+
+| Test | displaced RMSD | size conf. | steric conf. | AUROC | perm p | Spearman |
+|---|---|---|---|---|---|---|
+| uncontrolled | 4.5–8.3 Å | 0.500 | **1.000** | 1.000 | 0.0005 | +0.855 |
+| uncontrolled, hard | 1.1–2.3 Å | 0.500 | 0.983 | 0.999 | 0.0005 | +0.919 |
+| **clash-controlled** | 1.8–3.5 Å | 0.500 | **0.696** | **1.000** | 0.0005 | **+0.927** |
+
+Only the last row is evidence. In it both classes are physically plausible with
+overlapping contact distances (near 2.55–3.03 Å, displaced 2.52–2.96 Å), the
+trivial explanations sit near chance, and the representation still separates
+near-native from displaced poses while drifting monotonically with RMSD.
 
 **Featurization sanity check.** Records now encode as 2 segments, 55 pocket
 residue blocks + 8 ligand fragment blocks, 23 distinct block types — against the
