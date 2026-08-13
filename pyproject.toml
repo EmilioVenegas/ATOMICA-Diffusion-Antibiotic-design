@@ -1,11 +1,17 @@
- [tool.poetry]
+[tool.poetry]
 name = "atomica-diffusion-antibiotic-design"
 version = "0.1.0"
-description = "Research code for ATOMICA-based antibiotic design experiments"
-authors = ["Khaoula Belahsen <49695480+khaoulabelahsen@users.noreply.github.com>"]
+description = "SE(3)-equivariant cross-attention conditioning of a geometric diffusion model (DiffSBDD) on ATOMICA interaction embeddings, for de novo structure-based drug design."
+authors = ["Emilio Alonso Venegas-Hernandez <emiliovenegas10@gmail.com>"]
+license = "MIT"
 package-mode = false
 readme = "README.md"
+repository = "https://github.com/EmilioVenegas/ATOMICA-Diffusion-Antibiotic-design"
+keywords = ["drug-design", "diffusion-models", "equivariance", "geometric-deep-learning"]
 
+# NOTE: this environment covers the evaluation scripts (Boltz-2, OpenBabel) only.
+# Training and inference run in the conda environment defined by
+# DiffSBDD/environment.yaml, which pins the CUDA-matched PyTorch build.
 [tool.poetry.dependencies]
 python = ">=3.12,<3.13"
 torch = "2.2.2"
@@ -15,8 +21,17 @@ openbabel-wheel = "^3.1.1.22"
 imageio = "^2.37.0"
 
 [tool.poetry.group.dev.dependencies]
+pytest = "^8.0"
+ruff = "^0.6"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
 
+[tool.ruff]
+# The vendored upstream trees are not ours to restyle.
+exclude = ["ATOMICA", "DiffSBDD"]
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "rl_loop"]

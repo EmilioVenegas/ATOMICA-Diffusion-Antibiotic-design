@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Training and generation need a GPU, the CrossDocked corpus and CUDA-pinned
+# PyTorch, so they cannot run here. What CI can do is keep the published result
+# honest: verify the ablation numbers quoted in the README still follow from the
+# committed per-condition metrics, and keep the first-party code lint-clean.
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install check dependencies
+        run: python -m pip install --upgrade pip ruff pytest matplotlib
+
+      - name: Lint first-party code
+        # Vendored upstream trees are excluded in pyproject.toml.
+        run: ruff check scripts rl_loop tests
+
+      - name: Verify published ablation numbers are reproducible
+        run: python -m pytest tests -q
+
+      - name: Regenerate ablation summary and check it is committed
+        run: |
+          python scripts/compare_conditions.py \
+            --conditions results/baseline_A results/cond_B --outdir results
+          git diff --exit-code results/ablation_summary.md \
+            || (echo "::error::results/ablation_summary.md is stale — rerun scripts/compare_conditions.py and commit"; exit 1)

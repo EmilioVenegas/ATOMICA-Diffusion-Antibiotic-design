@@ -5,9 +5,12 @@ import numpy as np
 from pathlib import Path
 from tqdm import tqdm
 
-# Add paths to prioritize local modules
-sys.path.insert(0, os.getcwd()) # For ATOMICA
-sys.path.insert(0, os.path.join(os.getcwd(), 'DiffSBDD')) # For utils, lightning_modules
+# Anchor on the repo root rather than the working directory, so these run from
+# anywhere. First entry resolves `ATOMICA.*`; second resolves DiffSBDD's own
+# top-level modules (utils, lightning_modules, analysis).
+_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+sys.path.insert(0, _ROOT)
+sys.path.insert(0, os.path.join(_ROOT, 'DiffSBDD'))
 
 from analysis.molecule_builder import build_molecule
 from analysis.metrics import rdmol_to_smiles

@@ -5,7 +5,8 @@ Filters dataset based on expert_split.pt (Vina score < -8.5).
 
 import sys
 import os
-sys.path.append(os.path.abspath(os.path.dirname(__file__)))
+# Repo root, so `ATOMICA.*` and `DiffSBDD.*` resolve regardless of working dir.
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
 import lmdb
 import pickle

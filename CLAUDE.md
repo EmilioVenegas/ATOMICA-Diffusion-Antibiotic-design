@@ -46,7 +46,7 @@ The conda env provides: PyTorch Lightning 1.8.4, RDKit, BioPython, torch-scatter
 ### Data Preprocessing
 ```bash
 # From repo root — filter LMDB by Vina score, compute ATOMICA embeddings → .pt files
-python process_expert_atomica.py
+python scripts/process_expert_atomica.py
 ```
 
 ### Training
@@ -105,29 +105,31 @@ python DiffSBDD/optimize.py \
 
 ### Tests
 ```bash
-# Cross-attention / dynamics unit tests (run from DiffSBDD/)
-cd DiffSBDD && pytest tests/test_dynamics_forward.py -v
+# Ablation-result regression tests (no GPU or dataset needed)
+pytest tests -q
 
 # RL loop tests
 python rl_loop/test_rl_loop.py
 ```
+There is no unit test covering `SE3EquivariantCrossAttention` itself — an
+equivariance/masking test for it is the most valuable one to add next.
 
 ## Architecture
 
 ### Core: SE3EquivariantCrossAttention (`DiffSBDD/equivariant_diffusion/dynamics.py`)
 
 Integrates ATOMICA embeddings into each denoising step:
-- **Query**: ligand features `h_l` (optionally concatenated with timestep embedding when `timestep_adaptive: True`)
+- **Query**: ligand features `h_l` concatenated with a 16-dim timestep embedding (always on — there is no `timestep_adaptive` switch in the code)
 - **Key/Value**: per-pocket ATOMICA embeddings `h_p` (32-dim invariant scalars)
 - Masked scaled dot-product attention (batch-aware, variable-sized molecules)
-- Output: ligand feature delta, zero-initialized (`adapter_scale` starts at 0.01 for warm start)
+- Output: ligand feature delta. `out_proj` is zero-initialized, so the adapter is an exact no-op at step 0; a sigmoid `gate` on the timestep (init ~0.5) learns how much conditioning to apply per noise level.
 
 Cross-attention preserves SE(3) equivariance: invariant ATOMICA scalars update invariant ligand scalar features `h`, never coordinates.
 
 ### Diffusion (`DiffSBDD/equivariant_diffusion/`)
 
 - `dynamics.py` — `EGNNDynamics`: SE(3)-equivariant graph neural network, denoises ligand and pocket coordinates jointly. Contains the ATOMICA integration via `SE3EquivariantCrossAttention`.
-- `egnn_new.py` — EGNN layer with optional LoRA injection (`lora_rank > 0` adds low-rank updates to linear layers).
+- `egnn_new.py` — EGNN layer. **Unmodified from upstream.** LoRA is *not* implemented here or anywhere else; `lora_rank`/`lora_alpha` appear only in configs and are read by no code.
 - `en_diffusion.py` — `EnVariationalDiffusion`: base diffusion class (forward/reverse process, noise schedule).
 - `conditional_model.py` — `ConditionalDDPM`: only ligand is denoised; pocket is fixed context.
 
@@ -158,9 +160,9 @@ Configs live in `DiffSBDD/configs/`. Key parameters:
 freeze_backbone: False        # True = only adapter trains (Condition B)
 egnn_params:
   atomica_nf: 32              # 0 = disable ATOMICA
-  lora_rank: 0                # 8 = LoRA fine-tuning (Condition D)
+  lora_rank: 0                # NOT IMPLEMENTED -- see MODIFICATIONS.md
   lora_alpha: 16
-  timestep_adaptive: True     # query includes timestep embedding (Condition C)
+  timestep_adaptive: True     # NOT READ BY ANY CODE -- see MODIFICATIONS.md
   gradient_checkpointing: True  # required for <16GB VRAM with full-atom pockets
 
 # Training
@@ -176,7 +178,9 @@ diffusion_params:
   diffusion_noise_schedule: 'polynomial_2'
 ```
 
-The ablation progression A→B→C→D tests: does ATOMICA help at all (B vs A), does timestep-awareness help (C vs B), does backbone adaptation help (D vs C).
+The ablation progression A→B→C→D was the plan, but **only A and B have been run**.
+C is not distinguishable from B (its timestep behaviour is unconditionally active),
+and D's LoRA knobs are config-only with no implementation. See MODIFICATIONS.md.
 
 ## Repo Layout Notes
 
