@@ -72,6 +72,27 @@ information, actives should separate from decoys.
 Feed it *correctly*: pocket as segment 0 with one block per residue and true
 amino-acid block types, ligand as segment 1 with fragment-level blocks.
 
+### Running it
+
+```bash
+conda activate ~/.conda/envs/atomica-interface
+curl -o data/1h1s.pdb https://files.rcsb.org/download/1H1S.pdb   # CDK2/cyclin A + NU6102
+
+# Primary gate: is the representation geometry-sensitive at all?
+python scripts/phase0_pose_sensitivity.py \
+    --pocket data/1h1s.pdb --chains A --ligand 4SP --ligand_chain A
+
+# Secondary: does it separate binders from property-matched decoys?
+python scripts/phase0_discriminate.py \
+    --pocket data/1h1s.pdb --chains A --ref_ligand 4SP --ref_ligand_chain A \
+    --actives scripts/eval/cdk2_test_data/binders.csv \
+    --decoys scripts/eval/cdk2_test_data/decoys.csv \
+    --random scripts/eval/cdk2_test_data/random_molecules.csv
+```
+
+Run the pose test first: it needs only the one structure, invents no poses, and if
+it fails the binder/decoy result cannot be interpreted anyway.
+
 **Gate.** n = 30/30 gives a wide confidence interval, so treat CDK2 as a smoke test
 and confirm on a larger retrospective set (DUD-E or LIT-PCBA, several targets)
 before committing to Phases 2–4.

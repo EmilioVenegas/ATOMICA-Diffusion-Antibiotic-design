@@ -100,6 +100,65 @@ def ligand_blocks_from_mol(mol, fragmentation_method: Optional[str] = DEFAULT_FR
     )
 
 
+def component_smiles(code: str) -> Optional[str]:
+    """Look up a PDB chemical-component SMILES from ATOMICA's bundled table.
+
+    The table is ``SMILES<TAB>CODE<TAB>name``. Needed because a ligand read from a
+    PDB has coordinates but no reliable bond orders, and correct bonds are a
+    prerequisite for fragmenting it the way the checkpoint expects.
+    """
+    table = os.path.join(
+        _ROOT, "ATOMICA", "data", "converter", "pdb_chemical_components_smiles.txt"
+    )
+    code = code.strip().upper()
+    with open(table) as fh:
+        for line in fh:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) >= 2 and parts[1].strip().upper() == code:
+                return parts[0]
+    return None
+
+
+def ligand_from_pdb_het(pdb_path: str, resname: str, chain: Optional[str] = None,
+                        smiles: Optional[str] = None):
+    """Extract a HETATM ligand from a PDB as an RDKit molecule with real bonds.
+
+    PDB records carry no bond orders, so they are assigned from the component's
+    SMILES template. Without that the molecule cannot be fragmented into the
+    PS_300 blocks the pretrained model was trained on, and we would be back to
+    feeding ATOMICA an input it has never seen.
+    """
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    keep = []
+    with open(pdb_path) as fh:
+        for line in fh:
+            if not line.startswith("HETATM") or line[17:20].strip() != resname:
+                continue
+            if chain and line[21] != chain:
+                continue
+            keep.append(line)
+    if not keep:
+        raise ValueError(f"no HETATM {resname!r} (chain {chain}) in {pdb_path}")
+
+    mol = Chem.MolFromPDBBlock("".join(keep) + "END\n", removeHs=True, sanitize=False)
+    if mol is None:
+        raise ValueError(f"RDKit could not parse {resname} from {pdb_path}")
+
+    smiles = smiles or component_smiles(resname)
+    if smiles is None:
+        raise ValueError(
+            f"no SMILES template for {resname}; pass smiles= explicitly, otherwise "
+            "bond orders are unknown and fragmentation would be wrong"
+        )
+    template = Chem.MolFromSmiles(smiles)
+    if template is None:
+        raise ValueError(f"could not parse template SMILES for {resname}: {smiles}")
+
+    return AllChem.AssignBondOrdersFromTemplate(template, mol)
+
+
 def interface_data(pocket_blocks, ligand_blocks, dist_th: float = 8.0, trim: bool = True):
     """Assemble a two-segment ATOMICA record: pocket = segment 0, ligand = segment 1.
 

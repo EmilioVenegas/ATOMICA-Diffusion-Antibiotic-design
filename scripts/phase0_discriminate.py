@@ -90,20 +90,39 @@ def embed_ligand(smiles, seed=0):
     return Chem.RemoveHs(mol)
 
 
-def place_in_pocket(mol, pocket_centre):
-    """Translate a conformer so its centroid sits at the pocket centre.
+def reference_ligand_centre(pdb_path, resname, chain=None):
+    """Centroid of a HETATM residue, used as the binding-site centre.
 
-    A generated conformer has no pose relative to the receptor. Centring it gives
-    a defined, ligand-independent placement so every candidate is treated
-    identically. This is a crude stand-in for docking: it fixes position but not
-    orientation or conformation, so a null result here is NOT conclusive about
-    ATOMICA -- see --pose_note in the report.
+    The whole-protein centroid is not the binding site and must not be used as a
+    placement target: in 1H1S the 4SP inhibitor sits ~13.5 A from chain A's
+    centroid, which would place every candidate outside the pocket entirely.
     """
-    import numpy as np
+    coords = []
+    with open(pdb_path) as fh:
+        for line in fh:
+            if not line.startswith("HETATM") or line[17:20].strip() != resname:
+                continue
+            if chain and line[21] != chain:
+                continue
+            coords.append([float(line[30 + 8 * i : 38 + 8 * i]) for i in range(3)])
+    if not coords:
+        raise ValueError(f"no HETATM residue {resname!r} (chain {chain}) in {pdb_path}")
+    return np.asarray(coords, dtype=float).mean(axis=0)
 
+
+def place_in_pocket(mol, centre):
+    """Translate a conformer so its centroid sits at ``centre``.
+
+    A conformer generated from SMILES has no pose relative to the receptor.
+    Centring gives every candidate the same, ligand-independent placement, which
+    keeps the comparison fair -- but it fixes only position, not orientation or
+    conformation. This is a stand-in for docking, so a *null* result under this
+    placement is not conclusive about ATOMICA. Supply real poses with
+    --poses_sdf for a fair test.
+    """
     conf = mol.GetConformer()
     coords = conf.GetPositions()
-    shifted = coords - coords.mean(axis=0) + pocket_centre
+    shifted = coords - coords.mean(axis=0) + centre
     for i, xyz in enumerate(shifted):
         conf.SetAtomPosition(i, xyz.tolist())
     return mol
@@ -136,6 +155,14 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--pocket", required=True, help="receptor PDB")
     p.add_argument("--chains", nargs="*", default=None)
+    p.add_argument(
+        "--ref_ligand",
+        default=None,
+        help="HETATM residue name of the co-crystal ligand (e.g. 4SP). Its centroid "
+        "defines the binding site. Without it the whole-protein centroid is used, "
+        "which is NOT the pocket.",
+    )
+    p.add_argument("--ref_ligand_chain", default=None)
     p.add_argument("--actives", required=True)
     p.add_argument("--decoys", required=True)
     p.add_argument("--random", dest="random_mols", default=None)
@@ -164,10 +191,25 @@ def main():
 
     print(f"[1/4] loading pocket {args.pocket}")
     pocket_blocks = pocket_blocks_from_pdb(args.pocket, args.chains)
-    pocket_centre = np.mean(
+    protein_centre = np.mean(
         [atom.get_coord() for block in pocket_blocks for atom in block.units], axis=0
     )
-    print(f"      {len(pocket_blocks)} residue blocks, centre {np.round(pocket_centre, 2)}")
+    if args.ref_ligand:
+        pocket_centre = reference_ligand_centre(
+            args.pocket, args.ref_ligand, args.ref_ligand_chain
+        )
+        offset = float(np.linalg.norm(pocket_centre - protein_centre))
+        print(
+            f"      {len(pocket_blocks)} residue blocks; site centre from {args.ref_ligand} "
+            f"at {np.round(pocket_centre, 1)} ({offset:.1f} A from the protein centroid)"
+        )
+    else:
+        pocket_centre = protein_centre
+        print(
+            f"      {len(pocket_blocks)} residue blocks; WARNING: no --ref_ligand, "
+            f"falling back to the protein centroid {np.round(pocket_centre, 1)}, "
+            "which is generally not the binding site"
+        )
 
     print(f"[2/4] loading ATOMICA encoder on {device}")
     model = load_encoder(args.atomica_config, args.atomica_weights, device)

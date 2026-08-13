@@ -1,0 +1,51 @@
+# Environment for the ATOMICA interface work (docs/experiment-plan.md).
+#
+# DiffSBDD/environment.yaml covers the diffusion model but not ATOMICA, whose
+# dependencies (e3nn, torch_cluster, scikit-learn) were never captured anywhere.
+# This spec keeps DiffSBDD's pinned torch/CUDA so the two stay compatible, and
+# adds what ATOMICA needs to run.
+#
+#   conda env create -f environment-atomica.yml -p ~/.conda/envs/atomica-interface
+#   conda activate ~/.conda/envs/atomica-interface
+#
+# admet-ai and the training stack (lightning, wandb) are deliberately omitted:
+# they are heavy, unnecessary for Phases 0-2, and admet-ai's pip resolution is a
+# common source of environment failures. Add them from DiffSBDD/environment.yaml
+# when the training phases need them.
+name: atomica-interface
+channels:
+  - pyg
+  - pytorch
+  - nvidia
+  - conda-forge
+  # Excludes Anaconda's defaults (pkgs/main, pkgs/r), which otherwise leak in
+  # from global conda config and require accepting Anaconda's Terms of Service.
+  # Everything here resolves from the channels above.
+  - nodefaults
+dependencies:
+  - python=3.10.4
+  - pip
+  # Pinned to match DiffSBDD/environment.yaml so one env serves both codebases.
+  - pytorch=2.0.1=*cuda11.8*
+  - pytorch-cuda=11.8
+  # ATOMICA's geometric ops. torch_cluster is required by ATOMICA and absent
+  # from the DiffSBDD spec.
+  - pytorch-scatter=2.1.2
+  - pytorch-cluster=1.6.3
+  # Chemistry and structure IO
+  - rdkit=2022.03.2
+  - biopython=1.79
+  - openbabel=3.1.1
+  # Scientific stack. scikit-learn backs the Phase 0 cross-validated probe.
+  - numpy=1.26.4
+  - scipy=1.13.1
+  - scikit-learn
+  - pandas=2.2.2
+  - networkx=3.3
+  - matplotlib
+  - tqdm
+  - pytest
+  - pip:
+      # SE(3)-equivariant tensor operations used by ATOMICA's encoder.
+      - e3nn
+      - orjson
