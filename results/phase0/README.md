@@ -45,7 +45,7 @@ residue blocks + 8 ligand fragment blocks, 23 distinct block types — against t
 
 Established: the representation encodes interaction geometry, it is finely
 graded rather than merely detecting gross displacement, and the effect is not an
-artifact of complex composition. The premise behind Phases 1–4 holds.
+artifact of complex composition. The premise behind everything downstream holds.
 
 Not established:
 
