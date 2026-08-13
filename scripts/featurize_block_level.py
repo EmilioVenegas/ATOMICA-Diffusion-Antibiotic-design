@@ -97,8 +97,17 @@ def main():
         if template is None or native is None:
             continue
 
-        pocket = pocket_blocks_from_pdb(first["receptor"])
-        site, _ = blocks_interface(pocket, ligand_blocks_from_mol(native), args.site_radius)
+        # Guarded: ATOMICA's PS_300 tokenizer raises on elements outside its
+        # valence table (metal-containing ligands such as haem raise
+        # KeyError: 'Fe'). Unguarded, one such target aborts the whole run.
+        try:
+            pocket = pocket_blocks_from_pdb(first["receptor"])
+            site, _ = blocks_interface(
+                pocket, ligand_blocks_from_mol(native), args.site_radius
+            )
+        except Exception as exc:
+            print(f"  [{i}/{len(by_target)}] {target}: SKIPPED ({type(exc).__name__}: {exc})")
+            continue
         site_centroids = np.array(
             [np.mean([a.get_coord() for a in b.units], axis=0) for b in site]
         )

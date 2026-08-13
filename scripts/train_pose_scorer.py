@@ -80,8 +80,15 @@ def featurize(manifest_rows, site_radius, dist_th, device, cache_path):
         if template is None or native is None:
             continue
 
-        pocket = pocket_blocks_from_pdb(first["receptor"])
-        site, _ = blocks_interface(pocket, ligand_blocks_from_mol(native), site_radius)
+        # Guarded for the same reason as in featurize_block_level.py: the
+        # tokenizer raises on ligands whose elements are outside its valence
+        # table, and that must skip a target rather than kill the run.
+        try:
+            pocket = pocket_blocks_from_pdb(first["receptor"])
+            site, _ = blocks_interface(pocket, ligand_blocks_from_mol(native), site_radius)
+        except Exception as exc:
+            print(f"      [{i}/{len(by_target)}] {target}: SKIPPED ({type(exc).__name__})")
+            continue
 
         poses = list(Chem.SDMolSupplier(first["poses_file"], sanitize=False))
         kept = 0

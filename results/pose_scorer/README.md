@@ -5,106 +5,74 @@ has never seen? This is the gate on whether a usable tool exists
 (`docs/experiment-plan.md`, Phase 2).
 
 All numbers are out-of-fold under `GroupKFold` **by target**, so no test target
-contributes to its own prediction. Metric is CASF docking power: for each target,
-is the top-ranked pose within 2 Å of the crystal pose. The 8 targets where
-docking never produced a sub-2 Å pose are excluded — no scorer can solve them.
+contributes to its own prediction; ridge alpha is chosen by inner CV inside each
+training fold. Metric is CASF docking power: for each target, is the top-ranked
+pose within 2 Å of the crystal pose. Targets where docking never produced a
+sub-2 Å pose are excluded — no scorer can solve them.
 
-## Result: matches smina, does not beat it
+## Result (100-target benchmark, 72 solvable, 1674 poses)
 
-| Scorer | docking power | hits |
-|---|---|---|
-| random (floor) | 9.4% | — |
-| **smina (baseline)** | **63.6%** | **14/22** |
-| ATOMICA 32-d + ridge | 59.1% | 13/22 |
-| ATOMICA 32-d + gradient boosting | 45.5% | 10/22 |
-| ATOMICA + smina combined | 54.5% | 12/22 |
+| Scorer | docking power | hits | mean per-target Spearman | vs smina |
+|---|---|---|---|---|
+| random (floor) | 15.7% | — | — | — |
+| **smina (baseline)** | **59.7%** | **43/72** | — | — |
+| graph (32-d) | 55.6% | 40/72 | +0.371 ± 0.084 | p = 0.70 |
+| pocket_pool (96-d) | 41.7% | 30/72 | +0.344 ± 0.077 | **p = 0.019, worse** |
+| all-block (288-d) | 63.9% | 46/72 | +0.400 ± 0.074 | p = 0.65 |
 
-Mean per-target Spearman(predicted, true RMSD) for the ridge head: **+0.370**.
+**Conclusion: the head is comparable to smina and does not beat it.** All-block
+is 4 points ahead but wins 11 targets and loses 8 (McNemar p = 0.65), which is
+not a difference. The scorer clearly learns something real — every variant is far
+above the 15.7% floor, on targets never seen in training — but nothing here
+justifies a tool that is slower than smina and needs a GPU.
 
-The head is far above the 9.4% random floor, so it has learned something real
-about pose quality that transfers to unseen targets. It does not beat smina.
+## Retraction: the 22-target block-level result did not replicate
 
-**The gap is not measurable at this sample size.** Ridge and smina differ on 3 of
-22 targets (ATOMICA alone gets `9TMX`; smina alone gets `29LA` and `9SZK`), giving
-McNemar exact **p = 1.000**. Reporting 59.1% as "worse than 63.6%" would be
-over-reading one target.
+An earlier revision of this file reported, from the 22-target benchmark, that
+block-level features "fixed the bottleneck": `pocket_pool` at 68.2% with Spearman
++0.521, and a paired gain over graph-level of +0.127 (t = 1.83, p ≈ 0.07) that
+was described as supported.
 
-Adding capacity hurts (gradient boosting, 45.5%) and so does combining with smina
-(54.5%), both consistent with overfitting 520 poses through 32 features.
+At 72 targets `pocket_pool` measures **41.7%**, significantly *worse* than smina
+(p = 0.019), and the paired Spearman gain is **−0.027 (p = 0.52)**. The effect did
+not merely shrink, it reversed. That earlier conclusion is withdrawn.
 
-## What this means for the tool
+Two things went wrong, both worth remembering:
 
-As built, it does not justify itself. A scorer that matches smina while being
-slower and requiring a GPU has no reason to exist. Under the decision gate in
-`docs/experiment-plan.md` — beat smina, or match it with a *different* error
-profile — it fails both: 12 of smina's 14 hits are shared, so the errors are
-largely the same errors.
+- **Six feature sets were evaluated and the best reported.** The caveat was
+  recorded at the time, but recording a selection bias does not remove it.
+- **22 targets could not resolve differences of two or three targets.** Every
+  comparison at that size had McNemar p ≥ 0.69; the ranking between variants was
+  arbitrary, and the one that happened to lead was the one that reversed hardest.
 
-## Block-level representation — the bottleneck was real
+The Spearman intervals tell the same story: ±0.140 at 22 targets against ±0.074
+here. What survives the larger sample is narrow — all three variants sit between
++0.34 and +0.40, indistinguishable from each other.
 
-`graph_repr` compresses a whole complex to 32 numbers. Pooling ATOMICA's
-**block-level** representation instead (`scripts/featurize_block_level.py`),
-separately for the pocket and ligand segments, improves the scorer:
+## Where this leaves the tool question
 
-| Feature set | dock power | hits | mean per-target Spearman |
-|---|---|---|---|
-| random floor | 9.4% | — | — |
-| smina (baseline) | 63.6% | 14/22 | — |
-| graph (32-d, previous) | 59.1% | 13/22 | +0.367 ± 0.140 |
-| ligand_pool (96-d) | 18.2% | 4/22 | +0.294 |
-| contact_pool (64-d) | 36.4% | 8/22 | +0.307 |
-| **pocket_pool (96-d)** | 68.2% | 15/22 | **+0.521 ± 0.093** |
-| **all block levels (288-d)** | **72.7%** | **16/22** | +0.493 ± 0.121 |
+It fails the decision gate in `docs/experiment-plan.md`, which asked for beating
+smina or matching it with a complementary error profile. All-block matches, and
+the errors are not complementary enough for the difference to register at
+n = 72. Extraction into its own repository is not justified on this evidence.
 
-Alpha is chosen by inner CV inside each training fold, so it is never fitted on
-the targets it is tested on.
+What would change the answer is a better-posed learning problem, not more feature
+engineering on pooled representations. Pose quality is a per-contact property and
+every variant here pools it into a fixed-length vector before the head sees it;
+an architecture that scores contacts directly is a different proposition. That is
+a research project, not a packaging exercise.
 
-**What is supported.** Block-level beats graph-level. The paired per-target gain
-in Spearman is +0.127 (t = 1.83, p ≈ 0.07), and `pocket_pool` raises rank
-correlation from +0.367 to +0.521 with a tighter interval. The
-representation-bottleneck diagnosis was correct: the head was not undertrained,
-it was reading through too narrow a channel.
-
-**What is not established.** That it beats smina. 16/22 against 14/22 is 4
-targets won and 2 lost, McNemar **p = 0.688**. Six feature sets were evaluated
-and the best reported, which biases that number upward further. Treat 72.7% as
-"plausibly ahead, not demonstrated".
-
-Interpretably, `pocket_pool` is the strongest single block: because message
-passing runs across the interface, the pocket residues' representations shift
-according to what the ligand is doing to them, so they encode the interaction
-from the receptor's side. `ligand_pool` alone is near-useless (18.2%), which is
-what one would expect — ligand conformation carries little information about
-whether it is correctly *placed*.
-
-## The binding constraint is targets, not modelling
-
-n = 22 solvable targets cannot resolve differences of a few targets. CASF-2016
-has 285. Any further modelling work is premature until the benchmark is large
-enough to distinguish these scorers, and `scripts/build_pose_benchmark.py`
-already produces more targets on demand.
-
-## Superseded: the 32-d-only analysis
-
-`graph_repr` is **32-dimensional**. Everything above reads pose quality through
-those 32 numbers, and both attempts to add head capacity overfit immediately,
-which is what a representation bottleneck looks like.
-
-ATOMICA also exposes `block_repr` (per residue/fragment) and `unit_repr` (per
-atom). Pose quality is a local, per-contact property, so pooling block-level
-features — separately for the pocket and ligand segments — is the obvious next
-attempt and is cheap: `atomica_interface.scoring.interface_representation` already
-takes a `level` argument, and the benchmark and harness are built.
-
-Also worth noting before concluding anything about ATOMICA: at 6% of poses within
-2 Å this benchmark is harder than CASF-2016, whose decoys are curated to be
-balanced across RMSD bins. n = 22 targets is small; CASF-2016 has 285.
+Worth noting for comparability: at 6% of poses within 2 Å this benchmark is
+harder than CASF-2016, whose decoys are curated across RMSD bins, and CASF has
+285 targets to this set's 100.
 
 ## Reproduce
 
 ```bash
 conda activate ~/.conda/envs/atomica-interface
-python scripts/train_pose_scorer.py --benchmark data/pose_benchmark
+python scripts/build_pose_benchmark.py --n_targets 100 --candidate_pool 2500
+python scripts/featurize_block_level.py --benchmark data/pose_benchmark
 ```
 
-Representations are cached in `features.npz`; delete it to re-featurize.
+One target (`9WT9`) is skipped: ATOMICA's PS_300 tokenizer has no valence entry
+for iron and raises on haem-like ligands.
