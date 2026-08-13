@@ -71,3 +71,37 @@ python scripts/phase0_pose_sensitivity.py \
     --pocket data/1h1s.pdb --chains A --ligand 4SP --ligand_chain A --n_poses 30 \
     --far_shift 0.5 1.5 --far_angle 10 30      # hard variant
 ```
+
+
+## MVP: can this be a tool without training? — partly
+
+The pose result above comes from a probe **fitted on this system's own poses**. That
+proves the information is in the representation but is not a usable scorer: a real
+tool must work on a pocket it has never seen, with no per-pocket fitting.
+
+ATOMICA's pretraining objective offers a training-free route. It was pretrained to
+predict the rigid-body noise applied to a segment, so passing a zero noise target
+makes `translation_loss` equal the magnitude of the predicted correction — an
+energy with no labels (`atomica_interface/energy.py`).
+
+Evaluated on the same clash-controlled benchmark, 30 poses per class:
+
+| Scorer | AUROC | Spearman vs RMSD | Needs fitting? |
+|---|---|---|---|
+| min contact distance (trivial baseline) | 0.727 | — | no |
+| **training-free denoising energy** | **0.787** | +0.476 | **no** |
+| linear probe on the representation | 1.000 | +0.927 | yes, per system |
+
+**Verdict: the free lunch is not there.** The pretrained heads do not surface the
+signal — 0.787 sits only marginally above a baseline that just measures how close
+the ligand is to the protein. The probe's 1.000 is not a competing number, since it
+was fitted on the system it scores; it is an upper bound on what a head could
+extract.
+
+Consequence for tooling: a usable pose scorer needs a **head trained across
+systems**, not a wrapper around the pretrained model. That is a larger but still
+tractable project, and it makes cross-system generalisation the deciding
+experiment rather than an optional check.
+
+The rotation head is reported but unused: on this benchmark displaced poses score
+*lower* rotational correction than native ones, which is backwards.
