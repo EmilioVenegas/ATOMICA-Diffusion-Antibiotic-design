@@ -8,52 +8,56 @@ dist/
 build/
 .eggs/
 
-# ── Generated molecules / docking outputs ────────────────────────────────────
-*.sdf
-*.pdbqt
-*.mol2
-generated_ligands*.sdf
-docking/
-results/
-
-# ── Molecular structure files at repo root (example/scratch) ─────────────────
-*.pdb
-*.sdf
-
 # ── ML data, checkpoints, logs ───────────────────────────────────────────────
+# Training data and run logs are reproducible from the preprocessing scripts and
+# are far too large to version. Model weights already tracked in history stay
+# tracked; new ones should ship as GitHub Release assets instead.
 data/
 my_logs/
-checkpoints/
+wandb/
 *.ckpt
 *.pt
 *.pkl
-
-# ── Large compressed data ─────────────────────────────────────────────────────
 *.lmdb
 *.lmdb-lock
-*.gz
 *.npy
 *.jsonl.gz
 
-# ── One-off analysis / scratch scripts ───────────────────────────────────────
-sample_and_visualize.py
-verify_sampling.py
-create_2d_histogram.py
-extract_smiles.py
-create_expert_split.py
+# ── Generated molecules ──────────────────────────────────────────────────────
+# Raw generated structures run to tens of MB per ablation arm and are an output,
+# not a source. The per-condition metrics that summarise them ARE versioned --
+# see the negations under "evaluation evidence" below.
+*.sdf
+*.pdbqt
+*.mol2
+*.pdb
 
-# ── Misc output / scratch files ──────────────────────────────────────────────
-outputs/
-outputs_embedded.pt/
-demo_outputs/
-verification_results/
-*.png
-*.log
-*.json
-pdb_complex_analysis.json
-pdb_analysis.log
+# ── Docking scratch ──────────────────────────────────────────────────────────
+# Per-ligand Vina logs are raw tool output; the aggregated scores.csv is the
+# artifact worth keeping.
+docking/**/*.pdbqt
+docking/**/*.log
+docking/*_log.txt
+docking/config.txt
 
-# ── Environment / IDE ─────────────────────────────────────────────────────────
+# ── Run state ────────────────────────────────────────────────────────────────
+# Resume bookkeeping for interrupted evaluation runs, not a result.
+results/**/filtered/checkpoint.json
+
+# ── Evaluation evidence (deliberately versioned) ─────────────────────────────
+# These are the artifacts that back the numbers quoted in the README. They are
+# small, they are the record of what was actually run, and they must survive the
+# broad ignores above -- an earlier revision of this file silently excluded them.
+!results/
+!results/**/metrics.json
+!results/**/meta.json
+!results/**/*.md
+!results/figures/
+!results/figures/*.png
+!docking/scores.csv
+
+# ── Environment / IDE ────────────────────────────────────────────────────────
+.claude/settings.local.json
 .env
 .venv/
 *.egg

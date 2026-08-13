@@ -1,0 +1,709 @@
+{
+  "checkpoint": "checkpoints/crossdocked_fullatom_cond.ckpt",
+  "n_pockets": 100,
+  "n_samples": 100,
+  "timesteps": 100,
+  "no_atomica": true,
+  "pockets": [
+    {
+      "pocket_name": "pocket_0000",
+      "source_file": "complex_000001.pt",
+      "source_id": "107130",
+      "n_generated": 98,
+      "sdf_file": "pocket_0000.sdf"
+    },
+    {
+      "pocket_name": "pocket_0001",
+      "source_file": "complex_000002.pt",
+      "source_id": "107136",
+      "n_generated": 98,
+      "sdf_file": "pocket_0001.sdf"
+    },
+    {
+      "pocket_name": "pocket_0002",
+      "source_file": "complex_000003.pt",
+      "source_id": "107141",
+      "n_generated": 97,
+      "sdf_file": "pocket_0002.sdf"
+    },
+    {
+      "pocket_name": "pocket_0003",
+      "source_file": "complex_000004.pt",
+      "source_id": "107148",
+      "n_generated": 95,
+      "sdf_file": "pocket_0003.sdf"
+    },
+    {
+      "pocket_name": "pocket_0004",
+      "source_file": "complex_000005.pt",
+      "source_id": "10715",
+      "n_generated": 99,
+      "sdf_file": "pocket_0004.sdf"
+    },
+    {
+      "pocket_name": "pocket_0005",
+      "source_file": "complex_000006.pt",
+      "source_id": "107152",
+      "n_generated": 97,
+      "sdf_file": "pocket_0005.sdf"
+    },
+    {
+      "pocket_name": "pocket_0006",
+      "source_file": "complex_000007.pt",
+      "source_id": "107153",
+      "n_generated": 96,
+      "sdf_file": "pocket_0006.sdf"
+    },
+    {
+      "pocket_name": "pocket_0007",
+      "source_file": "complex_000008.pt",
+      "source_id": "107161",
+      "n_generated": 95,
+      "sdf_file": "pocket_0007.sdf"
+    },
+    {
+      "pocket_name": "pocket_0008",
+      "source_file": "complex_000009.pt",
+      "source_id": "107162",
+      "n_generated": 99,
+      "sdf_file": "pocket_0008.sdf"
+    },
+    {
+      "pocket_name": "pocket_0009",
+      "source_file": "complex_000010.pt",
+      "source_id": "107165",
+      "n_generated": 97,
+      "sdf_file": "pocket_0009.sdf"
+    },
+    {
+      "pocket_name": "pocket_0010",
+      "source_file": "complex_000011.pt",
+      "source_id": "107167",
+      "n_generated": 97,
+      "sdf_file": "pocket_0010.sdf"
+    },
+    {
+      "pocket_name": "pocket_0011",
+      "source_file": "complex_000012.pt",
+      "source_id": "107168",
+      "n_generated": 96,
+      "sdf_file": "pocket_0011.sdf"
+    },
+    {
+      "pocket_name": "pocket_0012",
+      "source_file": "complex_000013.pt",
+      "source_id": "107169",
+      "n_generated": 98,
+      "sdf_file": "pocket_0012.sdf"
+    },
+    {
+      "pocket_name": "pocket_0013",
+      "source_file": "complex_000014.pt",
+      "source_id": "107177",
+      "n_generated": 97,
+      "sdf_file": "pocket_0013.sdf"
+    },
+    {
+      "pocket_name": "pocket_0014",
+      "source_file": "complex_000015.pt",
+      "source_id": "107179",
+      "n_generated": 97,
+      "sdf_file": "pocket_0014.sdf"
+    },
+    {
+      "pocket_name": "pocket_0015",
+      "source_file": "complex_000016.pt",
+      "source_id": "10718",
+      "n_generated": 98,
+      "sdf_file": "pocket_0015.sdf"
+    },
+    {
+      "pocket_name": "pocket_0016",
+      "source_file": "complex_000017.pt",
+      "source_id": "107181",
+      "n_generated": 98,
+      "sdf_file": "pocket_0016.sdf"
+    },
+    {
+      "pocket_name": "pocket_0017",
+      "source_file": "complex_000018.pt",
+      "source_id": "107183",
+      "n_generated": 98,
+      "sdf_file": "pocket_0017.sdf"
+    },
+    {
+      "pocket_name": "pocket_0018",
+      "source_file": "complex_000019.pt",
+      "source_id": "107185",
+      "n_generated": 99,
+      "sdf_file": "pocket_0018.sdf"
+    },
+    {
+      "pocket_name": "pocket_0019",
+      "source_file": "complex_000020.pt",
+      "source_id": "107190",
+      "n_generated": 98,
+      "sdf_file": "pocket_0019.sdf"
+    },
+    {
+      "pocket_name": "pocket_0020",
+      "source_file": "complex_000021.pt",
+      "source_id": "107192",
+      "n_generated": 99,
+      "sdf_file": "pocket_0020.sdf"
+    },
+    {
+      "pocket_name": "pocket_0021",
+      "source_file": "complex_000022.pt",
+      "source_id": "107193",
+      "n_generated": 99,
+      "sdf_file": "pocket_0021.sdf"
+    },
+    {
+      "pocket_name": "pocket_0022",
+      "source_file": "complex_000023.pt",
+      "source_id": "107195",
+      "n_generated": 96,
+      "sdf_file": "pocket_0022.sdf"
+    },
+    {
+      "pocket_name": "pocket_0023",
+      "source_file": "complex_000024.pt",
+      "source_id": "107196",
+      "n_generated": 98,
+      "sdf_file": "pocket_0023.sdf"
+    },
+    {
+      "pocket_name": "pocket_0024",
+      "source_file": "complex_000025.pt",
+      "source_id": "107199",
+      "n_generated": 96,
+      "sdf_file": "pocket_0024.sdf"
+    },
+    {
+      "pocket_name": "pocket_0025",
+      "source_file": "complex_000026.pt",
+      "source_id": "107202",
+      "n_generated": 99,
+      "sdf_file": "pocket_0025.sdf"
+    },
+    {
+      "pocket_name": "pocket_0026",
+      "source_file": "complex_000027.pt",
+      "source_id": "107207",
+      "n_generated": 97,
+      "sdf_file": "pocket_0026.sdf"
+    },
+    {
+      "pocket_name": "pocket_0027",
+      "source_file": "complex_000028.pt",
+      "source_id": "107209",
+      "n_generated": 96,
+      "sdf_file": "pocket_0027.sdf"
+    },
+    {
+      "pocket_name": "pocket_0028",
+      "source_file": "complex_000029.pt",
+      "source_id": "107210",
+      "n_generated": 99,
+      "sdf_file": "pocket_0028.sdf"
+    },
+    {
+      "pocket_name": "pocket_0029",
+      "source_file": "complex_000030.pt",
+      "source_id": "107211",
+      "n_generated": 99,
+      "sdf_file": "pocket_0029.sdf"
+    },
+    {
+      "pocket_name": "pocket_0030",
+      "source_file": "complex_000031.pt",
+      "source_id": "107212",
+      "n_generated": 97,
+      "sdf_file": "pocket_0030.sdf"
+    },
+    {
+      "pocket_name": "pocket_0031",
+      "source_file": "complex_000032.pt",
+      "source_id": "107215",
+      "n_generated": 94,
+      "sdf_file": "pocket_0031.sdf"
+    },
+    {
+      "pocket_name": "pocket_0032",
+      "source_file": "complex_000033.pt",
+      "source_id": "107216",
+      "n_generated": 96,
+      "sdf_file": "pocket_0032.sdf"
+    },
+    {
+      "pocket_name": "pocket_0033",
+      "source_file": "complex_000034.pt",
+      "source_id": "107217",
+      "n_generated": 96,
+      "sdf_file": "pocket_0033.sdf"
+    },
+    {
+      "pocket_name": "pocket_0034",
+      "source_file": "complex_000035.pt",
+      "source_id": "107218",
+      "n_generated": 99,
+      "sdf_file": "pocket_0034.sdf"
+    },
+    {
+      "pocket_name": "pocket_0035",
+      "source_file": "complex_000036.pt",
+      "source_id": "107221",
+      "n_generated": 98,
+      "sdf_file": "pocket_0035.sdf"
+    },
+    {
+      "pocket_name": "pocket_0036",
+      "source_file": "complex_000037.pt",
+      "source_id": "107227",
+      "n_generated": 96,
+      "sdf_file": "pocket_0036.sdf"
+    },
+    {
+      "pocket_name": "pocket_0037",
+      "source_file": "complex_000038.pt",
+      "source_id": "107228",
+      "n_generated": 98,
+      "sdf_file": "pocket_0037.sdf"
+    },
+    {
+      "pocket_name": "pocket_0038",
+      "source_file": "complex_000039.pt",
+      "source_id": "107229",
+      "n_generated": 96,
+      "sdf_file": "pocket_0038.sdf"
+    },
+    {
+      "pocket_name": "pocket_0039",
+      "source_file": "complex_000040.pt",
+      "source_id": "107230",
+      "n_generated": 97,
+      "sdf_file": "pocket_0039.sdf"
+    },
+    {
+      "pocket_name": "pocket_0040",
+      "source_file": "complex_000041.pt",
+      "source_id": "107231",
+      "n_generated": 98,
+      "sdf_file": "pocket_0040.sdf"
+    },
+    {
+      "pocket_name": "pocket_0041",
+      "source_file": "complex_000042.pt",
+      "source_id": "107232",
+      "n_generated": 98,
+      "sdf_file": "pocket_0041.sdf"
+    },
+    {
+      "pocket_name": "pocket_0042",
+      "source_file": "complex_000043.pt",
+      "source_id": "107233",
+      "n_generated": 98,
+      "sdf_file": "pocket_0042.sdf"
+    },
+    {
+      "pocket_name": "pocket_0043",
+      "source_file": "complex_000044.pt",
+      "source_id": "107236",
+      "n_generated": 94,
+      "sdf_file": "pocket_0043.sdf"
+    },
+    {
+      "pocket_name": "pocket_0044",
+      "source_file": "complex_000045.pt",
+      "source_id": "107237",
+      "n_generated": 97,
+      "sdf_file": "pocket_0044.sdf"
+    },
+    {
+      "pocket_name": "pocket_0045",
+      "source_file": "complex_000046.pt",
+      "source_id": "107243",
+      "n_generated": 100,
+      "sdf_file": "pocket_0045.sdf"
+    },
+    {
+      "pocket_name": "pocket_0046",
+      "source_file": "complex_000047.pt",
+      "source_id": "107244",
+      "n_generated": 98,
+      "sdf_file": "pocket_0046.sdf"
+    },
+    {
+      "pocket_name": "pocket_0047",
+      "source_file": "complex_000048.pt",
+      "source_id": "107246",
+      "n_generated": 98,
+      "sdf_file": "pocket_0047.sdf"
+    },
+    {
+      "pocket_name": "pocket_0048",
+      "source_file": "complex_000049.pt",
+      "source_id": "107248",
+      "n_generated": 99,
+      "sdf_file": "pocket_0048.sdf"
+    },
+    {
+      "pocket_name": "pocket_0049",
+      "source_file": "complex_000050.pt",
+      "source_id": "107251",
+      "n_generated": 97,
+      "sdf_file": "pocket_0049.sdf"
+    },
+    {
+      "pocket_name": "pocket_0050",
+      "source_file": "complex_000051.pt",
+      "source_id": "107255",
+      "n_generated": 97,
+      "sdf_file": "pocket_0050.sdf"
+    },
+    {
+      "pocket_name": "pocket_0051",
+      "source_file": "complex_000052.pt",
+      "source_id": "107256",
+      "n_generated": 98,
+      "sdf_file": "pocket_0051.sdf"
+    },
+    {
+      "pocket_name": "pocket_0052",
+      "source_file": "complex_000053.pt",
+      "source_id": "107258",
+      "n_generated": 97,
+      "sdf_file": "pocket_0052.sdf"
+    },
+    {
+      "pocket_name": "pocket_0053",
+      "source_file": "complex_000054.pt",
+      "source_id": "107262",
+      "n_generated": 98,
+      "sdf_file": "pocket_0053.sdf"
+    },
+    {
+      "pocket_name": "pocket_0054",
+      "source_file": "complex_000055.pt",
+      "source_id": "107263",
+      "n_generated": 98,
+      "sdf_file": "pocket_0054.sdf"
+    },
+    {
+      "pocket_name": "pocket_0055",
+      "source_file": "complex_000056.pt",
+      "source_id": "107265",
+      "n_generated": 94,
+      "sdf_file": "pocket_0055.sdf"
+    },
+    {
+      "pocket_name": "pocket_0056",
+      "source_file": "complex_000057.pt",
+      "source_id": "107267",
+      "n_generated": 99,
+      "sdf_file": "pocket_0056.sdf"
+    },
+    {
+      "pocket_name": "pocket_0057",
+      "source_file": "complex_000058.pt",
+      "source_id": "107268",
+      "n_generated": 100,
+      "sdf_file": "pocket_0057.sdf"
+    },
+    {
+      "pocket_name": "pocket_0058",
+      "source_file": "complex_000059.pt",
+      "source_id": "107270",
+      "n_generated": 99,
+      "sdf_file": "pocket_0058.sdf"
+    },
+    {
+      "pocket_name": "pocket_0059",
+      "source_file": "complex_000060.pt",
+      "source_id": "107271",
+      "n_generated": 95,
+      "sdf_file": "pocket_0059.sdf"
+    },
+    {
+      "pocket_name": "pocket_0060",
+      "source_file": "complex_000061.pt",
+      "source_id": "107272",
+      "n_generated": 94,
+      "sdf_file": "pocket_0060.sdf"
+    },
+    {
+      "pocket_name": "pocket_0061",
+      "source_file": "complex_000062.pt",
+      "source_id": "107274",
+      "n_generated": 99,
+      "sdf_file": "pocket_0061.sdf"
+    },
+    {
+      "pocket_name": "pocket_0062",
+      "source_file": "complex_000063.pt",
+      "source_id": "107276",
+      "n_generated": 92,
+      "sdf_file": "pocket_0062.sdf"
+    },
+    {
+      "pocket_name": "pocket_0063",
+      "source_file": "complex_000064.pt",
+      "source_id": "107285",
+      "n_generated": 96,
+      "sdf_file": "pocket_0063.sdf"
+    },
+    {
+      "pocket_name": "pocket_0064",
+      "source_file": "complex_000065.pt",
+      "source_id": "107286",
+      "n_generated": 99,
+      "sdf_file": "pocket_0064.sdf"
+    },
+    {
+      "pocket_name": "pocket_0065",
+      "source_file": "complex_000066.pt",
+      "source_id": "107290",
+      "n_generated": 97,
+      "sdf_file": "pocket_0065.sdf"
+    },
+    {
+      "pocket_name": "pocket_0066",
+      "source_file": "complex_000067.pt",
+      "source_id": "107293",
+      "n_generated": 99,
+      "sdf_file": "pocket_0066.sdf"
+    },
+    {
+      "pocket_name": "pocket_0067",
+      "source_file": "complex_000068.pt",
+      "source_id": "107294",
+      "n_generated": 97,
+      "sdf_file": "pocket_0067.sdf"
+    },
+    {
+      "pocket_name": "pocket_0068",
+      "source_file": "complex_000069.pt",
+      "source_id": "107297",
+      "n_generated": 99,
+      "sdf_file": "pocket_0068.sdf"
+    },
+    {
+      "pocket_name": "pocket_0069",
+      "source_file": "complex_000070.pt",
+      "source_id": "107298",
+      "n_generated": 96,
+      "sdf_file": "pocket_0069.sdf"
+    },
+    {
+      "pocket_name": "pocket_0070",
+      "source_file": "complex_000071.pt",
+      "source_id": "107299",
+      "n_generated": 99,
+      "sdf_file": "pocket_0070.sdf"
+    },
+    {
+      "pocket_name": "pocket_0071",
+      "source_file": "complex_000072.pt",
+      "source_id": "107303",
+      "n_generated": 96,
+      "sdf_file": "pocket_0071.sdf"
+    },
+    {
+      "pocket_name": "pocket_0072",
+      "source_file": "complex_000073.pt",
+      "source_id": "107304",
+      "n_generated": 96,
+      "sdf_file": "pocket_0072.sdf"
+    },
+    {
+      "pocket_name": "pocket_0073",
+      "source_file": "complex_000074.pt",
+      "source_id": "107306",
+      "n_generated": 97,
+      "sdf_file": "pocket_0073.sdf"
+    },
+    {
+      "pocket_name": "pocket_0074",
+      "source_file": "complex_000075.pt",
+      "source_id": "107307",
+      "n_generated": 96,
+      "sdf_file": "pocket_0074.sdf"
+    },
+    {
+      "pocket_name": "pocket_0075",
+      "source_file": "complex_000076.pt",
+      "source_id": "107309",
+      "n_generated": 95,
+      "sdf_file": "pocket_0075.sdf"
+    },
+    {
+      "pocket_name": "pocket_0076",
+      "source_file": "complex_000077.pt",
+      "source_id": "107310",
+      "n_generated": 96,
+      "sdf_file": "pocket_0076.sdf"
+    },
+    {
+      "pocket_name": "pocket_0077",
+      "source_file": "complex_000078.pt",
+      "source_id": "107313",
+      "n_generated": 96,
+      "sdf_file": "pocket_0077.sdf"
+    },
+    {
+      "pocket_name": "pocket_0078",
+      "source_file": "complex_000079.pt",
+      "source_id": "107315",
+      "n_generated": 99,
+      "sdf_file": "pocket_0078.sdf"
+    },
+    {
+      "pocket_name": "pocket_0079",
+      "source_file": "complex_000080.pt",
+      "source_id": "107319",
+      "n_generated": 95,
+      "sdf_file": "pocket_0079.sdf"
+    },
+    {
+      "pocket_name": "pocket_0080",
+      "source_file": "complex_000081.pt",
+      "source_id": "10732",
+      "n_generated": 99,
+      "sdf_file": "pocket_0080.sdf"
+    },
+    {
+      "pocket_name": "pocket_0081",
+      "source_file": "complex_000082.pt",
+      "source_id": "107320",
+      "n_generated": 98,
+      "sdf_file": "pocket_0081.sdf"
+    },
+    {
+      "pocket_name": "pocket_0082",
+      "source_file": "complex_000083.pt",
+      "source_id": "107321",
+      "n_generated": 98,
+      "sdf_file": "pocket_0082.sdf"
+    },
+    {
+      "pocket_name": "pocket_0083",
+      "source_file": "complex_000084.pt",
+      "source_id": "107322",
+      "n_generated": 95,
+      "sdf_file": "pocket_0083.sdf"
+    },
+    {
+      "pocket_name": "pocket_0084",
+      "source_file": "complex_000085.pt",
+      "source_id": "107323",
+      "n_generated": 96,
+      "sdf_file": "pocket_0084.sdf"
+    },
+    {
+      "pocket_name": "pocket_0085",
+      "source_file": "complex_000086.pt",
+      "source_id": "107324",
+      "n_generated": 92,
+      "sdf_file": "pocket_0085.sdf"
+    },
+    {
+      "pocket_name": "pocket_0086",
+      "source_file": "complex_000087.pt",
+      "source_id": "107325",
+      "n_generated": 95,
+      "sdf_file": "pocket_0086.sdf"
+    },
+    {
+      "pocket_name": "pocket_0087",
+      "source_file": "complex_000088.pt",
+      "source_id": "107326",
+      "n_generated": 96,
+      "sdf_file": "pocket_0087.sdf"
+    },
+    {
+      "pocket_name": "pocket_0088",
+      "source_file": "complex_000089.pt",
+      "source_id": "107328",
+      "n_generated": 96,
+      "sdf_file": "pocket_0088.sdf"
+    },
+    {
+      "pocket_name": "pocket_0089",
+      "source_file": "complex_000090.pt",
+      "source_id": "107333",
+      "n_generated": 95,
+      "sdf_file": "pocket_0089.sdf"
+    },
+    {
+      "pocket_name": "pocket_0090",
+      "source_file": "complex_000091.pt",
+      "source_id": "107343",
+      "n_generated": 93,
+      "sdf_file": "pocket_0090.sdf"
+    },
+    {
+      "pocket_name": "pocket_0091",
+      "source_file": "complex_000092.pt",
+      "source_id": "107344",
+      "n_generated": 95,
+      "sdf_file": "pocket_0091.sdf"
+    },
+    {
+      "pocket_name": "pocket_0092",
+      "source_file": "complex_000093.pt",
+      "source_id": "107346",
+      "n_generated": 91,
+      "sdf_file": "pocket_0092.sdf"
+    },
+    {
+      "pocket_name": "pocket_0093",
+      "source_file": "complex_000094.pt",
+      "source_id": "107347",
+      "n_generated": 97,
+      "sdf_file": "pocket_0093.sdf"
+    },
+    {
+      "pocket_name": "pocket_0094",
+      "source_file": "complex_000095.pt",
+      "source_id": "107348",
+      "n_generated": 99,
+      "sdf_file": "pocket_0094.sdf"
+    },
+    {
+      "pocket_name": "pocket_0095",
+      "source_file": "complex_000096.pt",
+      "source_id": "107350",
+      "n_generated": 97,
+      "sdf_file": "pocket_0095.sdf"
+    },
+    {
+      "pocket_name": "pocket_0096",
+      "source_file": "complex_000097.pt",
+      "source_id": "107351",
+      "n_generated": 97,
+      "sdf_file": "pocket_0096.sdf"
+    },
+    {
+      "pocket_name": "pocket_0097",
+      "source_file": "complex_000098.pt",
+      "source_id": "107357",
+      "n_generated": 96,
+      "sdf_file": "pocket_0097.sdf"
+    },
+    {
+      "pocket_name": "pocket_0098",
+      "source_file": "complex_000099.pt",
+      "source_id": "107359",
+      "n_generated": 98,
+      "sdf_file": "pocket_0098.sdf"
+    },
+    {
+      "pocket_name": "pocket_0099",
+      "source_file": "complex_000100.pt",
+      "source_id": "107360",
+      "n_generated": 98,
+      "sdf_file": "pocket_0099.sdf"
+    }
+  ]
+}

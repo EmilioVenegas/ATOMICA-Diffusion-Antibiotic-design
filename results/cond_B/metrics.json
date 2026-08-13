@@ -1,0 +1,36 @@
+{
+  "label": "cond_B",
+  "sdf_dir": "results/cond_B",
+  "validity": 0.9496713229252259,
+  "n_pockets": 100,
+  "n_generated": 9736,
+  "n_valid": 9246,
+  "qed_mean": 0.48304917452522905,
+  "qed_std": 0.20814716913899928,
+  "qed_median": 0.4805327521049073,
+  "sa_mean": 0.5846960847934242,
+  "sa_std": 0.11236860329521962,
+  "sa_median": 0.58,
+  "logp_mean": 1.6090155948518288,
+  "logp_std": 1.7051638039030406,
+  "logp_median": 1.6143499999999995,
+  "lipinski_mean": 4.689703655634869,
+  "lipinski_std": 0.6956774381781382,
+  "lipinski_median": 5.0,
+  "diversity_mean": 0.684088780960336,
+  "diversity_std": 0.025355021849353985,
+  "uniqueness_mean": 0.9990740523249371,
+  "novelty": 1.0,
+  "posebusters": {
+    "pb_pass_rate_mean": 0.0,
+    "per_pocket": [],
+    "filter_counts": {
+      "n_valid": 0,
+      "n_pb_pass": 0,
+      "n_filtered": 0,
+      "n_near_miss": 0,
+      "n_strained": 0,
+      "n_salvageable": 0
+    }
+  }
+}
