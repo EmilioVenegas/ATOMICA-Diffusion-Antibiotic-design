@@ -62,15 +62,21 @@ to ±100) were added after NaN losses during early full-atom training runs.
 
 ## Status of the planned ablation arms
 
-The configs describe a four-arm progression (A→D). Be aware that **only A and B
-have been run**, and the remaining two are not fully implemented:
+The configs describe a four-arm progression (A→D). **All four were trained, but
+only A and B were sampled and evaluated** — `results/` contains no `cond_C` or
+`cond_D`, so the published comparison is A vs B only. Trained checkpoints for the
+other arms are in `my_logs/`.
 
-| Arm | Config | Status |
-|---|---|---|
-| **A** — no conditioning (`atomica_nf: 0`) | `crossdock_fullatom_cond.yml` | **Run.** Results in `results/baseline_A/`. |
-| **B** — adapter, backbone frozen | `crossdock_fullatom_cond_B.yml` | **Run.** Results in `results/cond_B/`. |
-| C — timestep-adaptive adapter | `crossdock_fullatom_cond_C.yml` | Not run as a separate arm. The timestep embedding and gate this arm was meant to toggle are unconditionally active in `SE3EquivariantCrossAttention`; there is no `timestep_adaptive` switch in the code, so C is not currently distinguishable from B. |
-| D — LoRA fine-tuning | `crossdock_fullatom_cond_D.yml` | **Not implemented.** `lora_rank` / `lora_alpha` appear in the config only; no Python file reads them and `egnn_new.py` is unmodified from upstream. Setting them has no effect. |
+| Arm | Config | Trained | Evaluated | Notes |
+|---|---|:--:|:--:|---|
+| **A** — no conditioning (`atomica_nf: 0`) | `crossdock_fullatom_cond.yml` | yes | **yes** | `results/baseline_A/` |
+| **B** — adapter, backbone frozen | `crossdock_fullatom_cond_B.yml` | yes | **yes** | `results/cond_B/` |
+| C — "timestep-adaptive" adapter | `crossdock_fullatom_cond_C.yml` | yes | no | **Architecturally identical to B.** The two configs differ only in `timestep_adaptive` (False vs True), and no code reads that key — the timestep embedding and gate are unconditionally active in `SE3EquivariantCrossAttention`. Both arms therefore trained the same model; C is a duplicate of B under a different run name. |
+| D — "LoRA" fine-tuning | `crossdock_fullatom_cond_D.yml` | yes | no | **Mislabeled, not absent.** `lora_rank`/`lora_alpha` are read by no code and `egnn_new.py` is unmodified from upstream, so no low-rank adaptation happens. What actually distinguishes D is `freeze_backbone: False` — it is full backbone fine-tuning. (Consistent with its 65 MB checkpoint against 18–19 MB for the frozen-backbone arms: an unfrozen backbone carries optimizer state for every parameter.) |
+
+Remaining work for these arms is listed in [run_scripts.md](run_scripts.md):
+generation for C and D, `scripts/evaluate.py` for both, docking for C, and a
+re-run of all four arms under `--sa_max 0.7`.
 
 ## Known gap
 

@@ -135,10 +135,14 @@ More entry points, including the evolutionary ADMET loop, are in
 
 ## Status
 
-Arms A and B are complete. Arms C and D described in the configs were **not** run,
-and arm D's LoRA parameters are config-only with no implementation behind them —
-see [MODIFICATIONS.md](MODIFICATIONS.md#status-of-the-planned-ablation-arms). The
-matched affinity comparison is the main open item.
+All four ablation arms were trained, but only A and B were sampled and evaluated,
+so the comparison above is A vs B. Two of the remaining arms are not what their
+names suggest: C is architecturally identical to B, and D is full backbone
+fine-tuning rather than LoRA — see
+[MODIFICATIONS.md](MODIFICATIONS.md#status-of-the-planned-ablation-arms).
+Outstanding runs are tracked in [run_scripts.md](run_scripts.md).
+
+The matched affinity comparison remains the main open item.
 
 Raw generated structures (~46 MB of SDF per arm) are not versioned; the per-condition
 metrics that summarise them are.

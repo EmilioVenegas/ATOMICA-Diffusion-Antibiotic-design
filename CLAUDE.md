@@ -178,9 +178,14 @@ diffusion_params:
   diffusion_noise_schedule: 'polynomial_2'
 ```
 
-The ablation progression A→B→C→D was the plan, but **only A and B have been run**.
-C is not distinguishable from B (its timestep behaviour is unconditionally active),
-and D's LoRA knobs are config-only with no implementation. See MODIFICATIONS.md.
+All four arms A→D were **trained** (checkpoints in `my_logs/`), but only A and B
+were **sampled and evaluated** — there is no `results/cond_C` or `results/cond_D`,
+so the published comparison is A vs B only.
+
+Two caveats before using C or D: C is architecturally identical to B (they differ
+only in `timestep_adaptive`, which no code reads), and D is full backbone
+fine-tuning rather than LoRA (`freeze_backbone: False` is what makes it differ;
+the LoRA keys do nothing). See MODIFICATIONS.md and run_scripts.md.
 
 ## Repo Layout Notes
 

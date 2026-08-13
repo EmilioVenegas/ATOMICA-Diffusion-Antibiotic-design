@@ -43,6 +43,8 @@ Notable changes to this project. Format loosely follows
 ### Known gaps
 - No matched binding-affinity comparison between arms A and B; the current
   result rests on target-independent metrics only. See `docs/results.md`.
-- Ablation arms C and D were never run; D's LoRA parameters have no
-  implementation behind them. See `MODIFICATIONS.md`.
+- Ablation arms C and D were trained but never sampled or evaluated, so the
+  published comparison is A vs B only. C is architecturally identical to B, and
+  D is full backbone fine-tuning rather than the LoRA its name implies. See
+  `MODIFICATIONS.md`; outstanding runs are listed in `run_scripts.md`.
 - No unit test for `SE3EquivariantCrossAttention` equivariance or masking.
