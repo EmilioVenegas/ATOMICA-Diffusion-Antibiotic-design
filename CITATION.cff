@@ -1,0 +1,33 @@
+cff-version: 1.2.0
+title: >-
+  ATOMICA-Diffusion: conditioning SE(3)-equivariant generative
+  design on pretrained interaction representations
+message: >-
+  If you use this software, please cite it alongside the
+  ATOMICA and DiffSBDD papers listed in THIRD_PARTY_NOTICES.md.
+type: software
+authors:
+  - given-names: Emilio Alonso
+    family-names: Venegas-Hernandez
+    email: emiliovenegas10@gmail.com
+    orcid: null
+repository-code: >-
+  https://github.com/EmilioVenegas/ATOMICA-Diffusion-Antibiotic-design
+abstract: >-
+  An SE(3)-equivariant cross-attention adapter that conditions a
+  geometric diffusion model for structure-based drug design
+  (DiffSBDD) on per-atom pocket embeddings from ATOMICA, a
+  foundation model pretrained on molecular interaction
+  interfaces. Both pretrained models are frozen, so the ablation
+  isolates the effect of the conditioning signal. Over 100
+  held-out CrossDocked pockets the adapter raises median
+  drug-likeness (QED +13.9% relative) at a cost in chemical
+  diversity (-6.4%).
+keywords:
+  - structure-based drug design
+  - diffusion models
+  - SE(3)-equivariance
+  - geometric deep learning
+  - foundation models
+  - antibiotic discovery
+license: MIT
