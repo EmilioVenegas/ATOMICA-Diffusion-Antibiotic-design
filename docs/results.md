@@ -67,6 +67,20 @@ is the one state that supports no conclusion.
 `docking/scores.csv` holds Vina scores for 50 ligands from a single generation run.
 It is **not** the matched comparison and should not be read as one.
 
+## Root cause of the null pocket-specificity
+
+The likely explanation is upstream of the model. `scripts/process_expert_atomica.py`
+feeds ATOMICA a **single segment** (`segment_ids = [0, 0]`) with the entire pocket
+as **one `UNK` block**. ATOMICA is pretrained on two interacting segments over
+chemically-typed residue/fragment blocks, so this invokes none of its interaction
+semantics and erases its block vocabulary. What remains is per-atom element and
+local geometry -- exactly the input from which a generic drug-likeness shift with no
+pocket specificity would be expected.
+
+Read that way, this table is a clean negative result for naively-extracted
+foundation-model embeddings as a conditioning signal. See
+[experiment-plan.md](experiment-plan.md).
+
 ## Caveats
 
 - Single seed per arm; no confidence intervals over repeated training runs. The

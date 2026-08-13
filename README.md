@@ -142,7 +142,13 @@ fine-tuning rather than LoRA — see
 [MODIFICATIONS.md](MODIFICATIONS.md#status-of-the-planned-ablation-arms).
 Outstanding runs are tracked in [run_scripts.md](run_scripts.md).
 
-The arms as designed vary training capacity rather than the conditioning signal, so they cannot establish *why* B beats A. [docs/experiment-plan.md](docs/experiment-plan.md) sets out the controls that can — starting with a shuffled-embedding arm that needs no retraining.
+**The conditioning signal was mis-extracted.** ATOMICA is pretrained on two
+interacting segments over chemically-typed residue blocks; preprocessing fed it a
+single segment with the whole pocket as one `UNK` block, engaging none of its
+interaction semantics. The result above is therefore best read as a negative result
+for naively-extracted foundation-model embeddings. [docs/experiment-plan.md](docs/experiment-plan.md)
+sets out the redesign, beginning with a go/no-go test of whether ATOMICA
+discriminates binders from decoys at all.
 
 Raw generated structures (~46 MB of SDF per arm) are not versioned; the per-condition
 metrics that summarise them are.
