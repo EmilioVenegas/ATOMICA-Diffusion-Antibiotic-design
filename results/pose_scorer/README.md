@@ -40,7 +40,51 @@ slower and requiring a GPU has no reason to exist. Under the decision gate in
 profile — it fails both: 12 of smina's 14 hits are shared, so the errors are
 largely the same errors.
 
-## The untested lever
+## Block-level representation — the bottleneck was real
+
+`graph_repr` compresses a whole complex to 32 numbers. Pooling ATOMICA's
+**block-level** representation instead (`scripts/featurize_block_level.py`),
+separately for the pocket and ligand segments, improves the scorer:
+
+| Feature set | dock power | hits | mean per-target Spearman |
+|---|---|---|---|
+| random floor | 9.4% | — | — |
+| smina (baseline) | 63.6% | 14/22 | — |
+| graph (32-d, previous) | 59.1% | 13/22 | +0.367 ± 0.140 |
+| ligand_pool (96-d) | 18.2% | 4/22 | +0.294 |
+| contact_pool (64-d) | 36.4% | 8/22 | +0.307 |
+| **pocket_pool (96-d)** | 68.2% | 15/22 | **+0.521 ± 0.093** |
+| **all block levels (288-d)** | **72.7%** | **16/22** | +0.493 ± 0.121 |
+
+Alpha is chosen by inner CV inside each training fold, so it is never fitted on
+the targets it is tested on.
+
+**What is supported.** Block-level beats graph-level. The paired per-target gain
+in Spearman is +0.127 (t = 1.83, p ≈ 0.07), and `pocket_pool` raises rank
+correlation from +0.367 to +0.521 with a tighter interval. The
+representation-bottleneck diagnosis was correct: the head was not undertrained,
+it was reading through too narrow a channel.
+
+**What is not established.** That it beats smina. 16/22 against 14/22 is 4
+targets won and 2 lost, McNemar **p = 0.688**. Six feature sets were evaluated
+and the best reported, which biases that number upward further. Treat 72.7% as
+"plausibly ahead, not demonstrated".
+
+Interpretably, `pocket_pool` is the strongest single block: because message
+passing runs across the interface, the pocket residues' representations shift
+according to what the ligand is doing to them, so they encode the interaction
+from the receptor's side. `ligand_pool` alone is near-useless (18.2%), which is
+what one would expect — ligand conformation carries little information about
+whether it is correctly *placed*.
+
+## The binding constraint is targets, not modelling
+
+n = 22 solvable targets cannot resolve differences of a few targets. CASF-2016
+has 285. Any further modelling work is premature until the benchmark is large
+enough to distinguish these scorers, and `scripts/build_pose_benchmark.py`
+already produces more targets on demand.
+
+## Superseded: the 32-d-only analysis
 
 `graph_repr` is **32-dimensional**. Everything above reads pose quality through
 those 32 numbers, and both attempts to add head capacity overfit immediately,
