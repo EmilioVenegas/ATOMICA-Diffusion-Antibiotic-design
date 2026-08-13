@@ -1,0 +1,58 @@
+{
+  "pocket": "data/1h1s.pdb",
+  "ligand": "4SP",
+  "n_poses": 60,
+  "near_class": {
+    "shift_A": [
+      0.0,
+      0.5
+    ],
+    "angle_deg": [
+      0.0,
+      10.0
+    ]
+  },
+  "displaced_class": {
+    "shift_A": [
+      0.5,
+      1.5
+    ],
+    "angle_deg": [
+      10.0,
+      30.0
+    ]
+  },
+  "rmsd_by_class": {
+    "near_native": [
+      0.0,
+      0.793
+    ],
+    "displaced": [
+      1.109,
+      2.309
+    ]
+  },
+  "dropped_lost_contact": 0,
+  "fixed_site_blocks": 54,
+  "size_confound_auroc": {
+    "block_count": 0.5,
+    "atom_count": 0.5
+  },
+  "record_structure": {
+    "n_atoms": 465,
+    "n_blocks": 63,
+    "n_segments": 2,
+    "blocks_per_segment": {
+      "0": 55,
+      "1": 8
+    },
+    "distinct_block_types": 23
+  },
+  "auroc_near_vs_displaced": 0.9989,
+  "permutation_p": 0.0005,
+  "spearman_repr_drift_vs_rmsd": 0.9194,
+  "rmsd_range": [
+    0.0,
+    2.309
+  ]
+}

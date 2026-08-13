@@ -121,6 +121,9 @@ def main():
     p.add_argument("--far_angle", type=float, nargs=2, default=[60.0, 180.0],
                    help="rotation range for the displaced class (deg)")
     p.add_argument("--dist_th", type=float, default=8.0)
+    p.add_argument("--site_radius", type=float, default=10.0,
+                   help="residues within this distance of the NATIVE ligand form the "
+                        "fixed binding site used for every pose")
     p.add_argument("--device", default="cuda")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", default="results/phase0")
@@ -152,17 +155,34 @@ def main():
     native_coords = native.GetConformer().GetPositions()
     print(f"      {native.GetNumAtoms()} atoms, centroid {np.round(native_coords.mean(0), 1)}")
 
+    # The binding site is defined ONCE from the native pose and then held fixed.
+    #
+    # This matters. If the pocket were re-trimmed to each pose's contacts, a
+    # displaced ligand would touch a different number of residues, and the
+    # representation could separate the classes purely by complex size rather
+    # than by interaction geometry. Measured on this system that shortcut alone
+    # is worth AUROC ~0.70. Holding the site fixed drives it to chance and makes
+    # any remaining separation attributable to geometry.
+    from ATOMICA.data.dataset import blocks_interface
+
+    site_blocks, _ = blocks_interface(
+        pocket_blocks, ligand_blocks_from_mol(native), args.site_radius
+    )
+    print(f"      fixed binding site: {len(site_blocks)} residue blocks "
+          f"within {args.site_radius} A of the native pose")
+
     print(f"[3/4] encoder on {device}")
     model = load_encoder(args.atomica_config, args.atomica_weights, device)
 
     def encode(coords):
         mol = set_coords(native, coords)
         blocks = ligand_blocks_from_mol(mol)
-        data = interface_data(pocket_blocks, blocks, args.dist_th)
+        # trim=False: the site is already fixed, so composition stays constant.
+        data = interface_data(site_blocks, blocks, args.dist_th, trim=False)
         return interface_representation(model, to_batch(data, device)).reshape(-1), data
 
     print("[4/4] encoding perturbed poses")
-    feats, labels, rmsds = [], [], []
+    feats, labels, rmsds, sizes = [], [], [], []
     lost_contact = 0
     structure = None
 
@@ -192,6 +212,7 @@ def main():
         feats.append(vec)
         labels.append(label)
         rmsds.append(rmsd)
+        sizes.append((summarize(data)["n_blocks"], summarize(data)["n_atoms"]))
 
     labels = np.asarray(labels)
     feats = np.asarray(feats)
@@ -203,6 +224,17 @@ def main():
     )
     if labels.sum() == 0 or (labels == 0).sum() == 0:
         raise SystemExit("need both classes -- widen the displacement bands")
+
+    # Built-in confound check: could complex size alone produce this separation?
+    sizes = np.asarray(sizes, dtype=float)
+    size_auroc = {
+        "block_count": round(
+            max(roc_auc(labels, sizes[:, 0]), roc_auc(labels, -sizes[:, 0])), 4
+        ),
+        "atom_count": round(
+            max(roc_auc(labels, sizes[:, 1]), roc_auc(labels, -sizes[:, 1])), 4
+        ),
+    }
 
     scores = cross_validated_probe(feats, labels, seed=args.seed)
     if scores is None:
@@ -236,6 +268,8 @@ def main():
             ],
         },
         "dropped_lost_contact": lost_contact,
+        "fixed_site_blocks": len(site_blocks),
+        "size_confound_auroc": size_auroc,
         "record_structure": structure,
         "auroc_near_vs_displaced": round(auroc, 4),
         "permutation_p": round(p_value, 5),
@@ -244,7 +278,10 @@ def main():
     }
     (outdir / "phase0_pose_sensitivity.json").write_text(json.dumps(report, indent=2))
 
-    print(f"\nAUROC near-native vs displaced : {auroc:.3f}  (permutation p = {p_value:.4f})")
+    print(f"\nsize confound (block count)    : {size_auroc['block_count']:.3f}  "
+          f"(0.5 = composition is constant, as intended)")
+    print(f"size confound (atom count)     : {size_auroc['atom_count']:.3f}")
+    print(f"AUROC near-native vs displaced : {auroc:.3f}  (permutation p = {p_value:.4f})")
     print(f"Spearman(repr drift, RMSD)     : {spearman:+.3f}")
     print()
     if auroc < 0.65:
