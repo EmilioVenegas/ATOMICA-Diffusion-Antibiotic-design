@@ -234,9 +234,13 @@ def main():
                 # GetBestRMS needs cannot succeed.
                 heavy = Chem.RemoveAllHs(pose, sanitize=False)
                 fixed = AllChem.AssignBondOrdersFromTemplate(template, heavy)
-                # Symmetry-aware: equivalent atoms are matched rather than
-                # compared by index, so a flipped phenyl is not counted as error.
-                rmsd = rdMolAlign.GetBestRMS(fixed, native)
+                # CalcRMS, NOT GetBestRMS. GetBestRMS superimposes the pose on
+                # the reference first, which deletes the rigid-body displacement
+                # that determines whether a docked pose is correct -- a pose 6 A
+                # out of position measures as 0.00. CalcRMS is in-place and still
+                # symmetry-aware, so a flipped phenyl is not counted as error
+                # while a misplaced ligand is.
+                rmsd = rdMolAlign.CalcRMS(fixed, native)
             except Exception:
                 continue
             score = pose.GetProp("minimizedAffinity") if pose.HasProp("minimizedAffinity") else ""
