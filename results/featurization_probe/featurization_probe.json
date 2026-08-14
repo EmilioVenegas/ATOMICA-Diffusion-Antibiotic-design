@@ -1,0 +1,25 @@
+{
+  "n_pockets": 99,
+  "blocks_per_pocket": {
+    "old": {
+      "mean_blocks": 2.0,
+      "distinct_types": 2
+    },
+    "new": {
+      "mean_blocks": 56.3,
+      "mean_distinct_types": 17.9
+    }
+  },
+  "mean_pairwise_cosine_between_pockets": {
+    "old_graph": 1.0,
+    "new_graph": 0.9917,
+    "old_unit_mean": 1.0,
+    "new_unit_mean": 0.9999
+  },
+  "composition_probe_r2": {
+    "old_graph": 0.2014,
+    "new_graph": 0.1761,
+    "old_unit_mean": 0.1652,
+    "new_unit_mean": 0.1076
+  }
+}
