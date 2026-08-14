@@ -1,0 +1,114 @@
+run_name: 'critic_graph_cosine_r0'
+logdir: './my_logs'
+wandb_params:
+  mode: 'online'
+  entity: 'emiliovenegas10-tecnol-gico-de-monterrey'
+  group: 'atomica-crossdocked'
+  project: 'atomica-enhanced'
+
+dataset: 'crossdock'
+datadir: 'data/processed_expert_atomica'
+enable_progress_bar: True
+num_sanity_val_steps: 0
+
+mode: 'pocket_conditioning'
+pocket_representation: 'full-atom'
+
+# --- ATOMICA as a training-time critic ---
+#
+#   L = L_diffusion + lambda(t) * d( ATOMICA(pocket, x0_hat), ATOMICA(pocket, x_true) )
+#
+# This is NOT the conditioning adapter of arms B/C/D. ATOMICA is a frozen
+# teacher in the loss only: it sees the true ligand as a *label*, never as an
+# input, so sampling needs no ATOMICA at all and cannot be bottlenecked by the
+# cross-system transfer that Phase 2 resolved as negative
+# (docs/experiment-plan.md). The backbone stays frozen so the comparison against
+# arm B is a comparison of objectives, not of capacity.
+#
+# Requires scripts/add_critic_targets.py to have been run over the data
+# directory; complexes without cached critic fields train on the diffusion loss
+# alone.
+batch_size: 2
+accumulate_grad_batches: 16       # effective batch = 32
+lr: 1.0e-5
+adapter_lr: 1.0e-4
+freeze_backbone: True
+n_epochs: 50
+early_stop_patience: 5
+val_check_interval: 200
+
+noise_factor: 1.0
+num_workers: 8
+gpus: 1
+clip_grad: True
+augment_rotation: False
+augment_noise: 0
+precision: bf16-mixed
+compile: false
+
+auxiliary_loss: False
+loss_params:
+  max_weight: 0.001
+  schedule: 'linear'
+  clamp_lj: 3.0
+
+critic_params:
+  enabled: True
+  model_config: 'ATOMICA/pretrain/pretrain_model_config.json'
+  model_weights: 'ATOMICA/pretrain/pretrain_model_weights.pt'
+  # 'cosine' on the graph representation: the featurization probe found the
+  # graph level least degenerate for genuine two-segment records, and the
+  # sanity gate measures its ordering against RMSD before any training.
+  distance: 'cosine'
+  level: 'graph'
+  # lambda at t = 0. Cosine distance on a 32-d representation is small in
+  # absolute terms (order 1e-2 at 1 A of displacement, per
+  # tests/test_critic_roundtrip.py), so this needs to be large enough to matter
+  # against the diffusion loss. Tune it on a short run before committing.
+  max_weight: 1.0
+  # 'ramp' decays linearly to zero at cutoff*T; 'cutoff' is a hard switch;
+  # 'constant' is the ablation. Restricting to low t is not a tuning choice --
+  # ATOMICA has never seen a half-formed ligand, and the round-trip test shows
+  # the distance saturating and turning over once the ligand leaves the pocket,
+  # so gradients taken at high noise can point the wrong way.
+  schedule: 'ramp'
+  cutoff: 0.25
+
+egnn_params:
+  device: 'cuda'
+  edge_cutoff_ligand: null
+  edge_cutoff_pocket: 5.0
+  edge_cutoff_interaction: 5.0
+  reflection_equivariant: False
+  joint_nf: 128
+  hidden_nf: 256
+  n_layers: 6
+  attention: True
+  tanh: True
+  norm_constant: 1
+  inv_sublayers: 1
+  sin_embedding: False
+  aggregation_method: 'sum'
+  normalization_factor: 100
+  atomica_nf: 32
+  lora_rank: 0
+  lora_alpha: 16
+  timestep_adaptive: False
+  gradient_checkpointing: True    # required for RTX 4060 8GB with full-atom pockets
+
+diffusion_params:
+  diffusion_steps: 500
+  diffusion_noise_schedule: 'polynomial_2'
+  diffusion_noise_precision: 5.0e-4
+  diffusion_loss_type: 'l2'
+  normalize_factors: [1, 4]
+
+eval_epochs: 5
+visualize_sample_epoch: 10
+visualize_chain_epoch: 50
+eval_params:
+  n_eval_samples: 50
+  eval_batch_size: 50
+  smiles_file: 'data/crossdocked_smiles.npy'
+  n_visualize_samples: 3
+  keep_frames: 100

@@ -54,7 +54,10 @@ class ProcessedLigandPocketDataset(Dataset):
         out = {}
         for prop in batch[0].keys():
 
-            if prop == 'names' or prop == 'receptors' or prop == 'name':
+            if prop == 'names' or prop == 'receptors' or prop == 'name' \
+                    or prop == 'critic_meta':
+                # critic_meta is ragged -- block counts differ per complex -- so
+                # it stays a list and is indexed per sample rather than stacked.
                 out[prop] = [x[prop] for x in batch]
             elif prop == 'num_lig_atoms' or prop == 'num_pocket_nodes' \
                     or prop == 'num_virtual_atoms':
@@ -103,6 +106,22 @@ class LigandPocketDatasetPT(Dataset):
             
             if 'pocket_atomica_embeddings' in data:
                 data['pocket_atomica_embeddings'] = data['pocket_atomica_embeddings'].float()
+
+            # Gather the ATOMICA critic's cached record structure into one
+            # bundle (written by scripts/add_critic_targets.py). It is keyed
+            # without the prefix because atomica_interface.critic addresses it
+            # by ATOMICA's own field names. Complexes predating that script
+            # carry None and simply train without the critic term.
+            critic_keys = ('A', 'B', 'block_lengths', 'segment_ids',
+                           'pocket_atom_order', 'lig_atom_order',
+                           'graph_repr_true', 'unit_repr_true')
+            if 'critic_graph_repr_true' in data:
+                data['critic_meta'] = {
+                    key: data.pop(f'critic_{key}') for key in critic_keys
+                    if f'critic_{key}' in data
+                }
+            else:
+                data['critic_meta'] = None
 
             # Check CoM before centering
             joint_coords = torch.cat([data['lig_coords'], data['pocket_coords']], dim=0)

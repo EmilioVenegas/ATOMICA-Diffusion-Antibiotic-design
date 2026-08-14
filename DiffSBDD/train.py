@@ -110,7 +110,8 @@ if __name__ == "__main__":
         mode=args.mode,
         node_histogram=histogram,
         pocket_representation=args.pocket_representation,
-        virtual_nodes=getattr(args, 'virtual_nodes', False)
+        virtual_nodes=getattr(args, 'virtual_nodes', False),
+        critic_params=getattr(args, 'critic_params', None)
     )
 
     logger = pl.loggers.WandbLogger(

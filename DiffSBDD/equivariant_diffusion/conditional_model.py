@@ -324,6 +324,12 @@ class ConditionalDDPM(EnVariationalDiffusion):
             'eps_hat_lig_h': scatter_mean(
                 net_out_lig[:, self.n_dims:].abs().mean(1), ligand['mask'],
                 dim=0).mean(),
+            # The pocket in the SAME centred, normalised frame as xh_lig_hat.
+            # The ATOMICA critic has to encode both together, and the frame here
+            # differs from the caller's by a per-complex centre-of-mass shift.
+            # Underscore-prefixed keys are payload, not metrics: the caller pops
+            # them before logging.
+            '_xh_pocket': xh_pocket,
         }
         loss_terms = (delta_log_px, error_t_lig, torch.tensor(0.0), SNR_weight,
                       loss_0_x_ligand, torch.tensor(0.0), loss_0_h,

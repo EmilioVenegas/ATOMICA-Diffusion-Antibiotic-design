@@ -58,7 +58,8 @@ class LigandPocketDDPM(pl.LightningModule):
             mode,
             node_histogram,
             pocket_representation='CA',
-            virtual_nodes=False
+            virtual_nodes=False,
+            critic_params=None
     ):
         super(LigandPocketDDPM, self).__init__()
         self.save_hyperparameters()
@@ -95,6 +96,32 @@ class LigandPocketDDPM(pl.LightningModule):
             self.gradnorm_queue = utils.Queue()
             # Add large value that will be flushed.
             self.gradnorm_queue.add(3000)
+
+        # --- ATOMICA critic ---
+        # A frozen teacher penalising the interface implied by the predicted
+        # clean ligand against the interface of the true one. It compares two
+        # states of the SAME complex, which is the regime that measured well
+        # (Phase 0, AUROC 1.000); it never asks for a transferable absolute
+        # score, which is the regime that failed (Phase 2). Inference is
+        # unaffected -- the critic exists only in the training graph, so the
+        # sampler never loads ATOMICA.
+        self.critic_params = critic_params
+        self.critic = None
+        if critic_params is not None and getattr(critic_params, 'enabled', False):
+            from atomica_interface.critic import ATOMICACritic
+
+            self.critic = ATOMICACritic(
+                critic_params.model_config,
+                critic_params.model_weights,
+                distance=getattr(critic_params, 'distance', 'cosine'),
+                level=getattr(critic_params, 'level', 'graph'),
+            )
+            self.critic_weight = critic_params.max_weight
+            self.critic_schedule = getattr(critic_params, 'schedule', 'ramp')
+            self.critic_cutoff = getattr(critic_params, 'cutoff', 0.5)
+            print(f"ATOMICA critic enabled: distance={self.critic.distance}, "
+                  f"level={self.critic.level}, max_weight={self.critic_weight}, "
+                  f"schedule={self.critic_schedule}, cutoff={self.critic_cutoff}")
 
         self.lig_type_encoder = self.dataset_info['atom_encoder']
         self.lig_type_decoder = self.dataset_info['atom_decoder']
@@ -339,6 +366,9 @@ class LigandPocketDDPM(pl.LightningModule):
         kl_prior, log_pN, t_int, xh_lig_hat, info = \
             self.ddpm(ligand, pocket, return_info=True)
 
+        # Payload rather than a metric; log_metrics would choke on a tensor.
+        xh_pocket = info.pop('_xh_pocket', None)
+
         if self.loss_type == 'l2':
             actual_ligand_size = ligand['size'] - ligand['num_virtual_atoms'] if self.virtual_nodes else ligand['size']
 
@@ -387,6 +417,15 @@ class LigandPocketDDPM(pl.LightningModule):
             nll = nll + weighted_lj_potential
             info['weighted_lj'] = weighted_lj_potential.mean(0)
 
+        # Add the ATOMICA critic term
+        if self.critic is not None and xh_pocket is not None \
+                and data.get('critic_meta') is not None:
+            weighted_critic, critic_info = self.critic_term(
+                data, ligand, pocket, xh_lig_hat, xh_pocket, t_int)
+            if weighted_critic is not None:
+                nll = nll + weighted_critic
+                info.update(critic_info)
+
         info['error_t_lig'] = error_t_lig.mean(0)
         info['error_t_pocket'] = error_t_pocket.mean(0)
         info['SNR_weight'] = SNR_weight.mean(0)
@@ -396,6 +435,79 @@ class LigandPocketDDPM(pl.LightningModule):
         info['neg_log_const_0'] = neg_log_const_0.mean(0)
         info['log_pN'] = log_pN.mean(0)
         return nll, info
+
+    def critic_term(self, data, ligand, pocket, xh_lig_hat, xh_pocket, t_int):
+        """lambda(t) * d( ATOMICA(pocket, x0_hat), ATOMICA(pocket, x_true) ).
+
+        Returns ``(weighted_term, info)`` where ``weighted_term`` is a per-sample
+        tensor aligned with ``nll``, or ``(None, {})`` when no sample in the
+        batch qualifies.
+
+        Only samples whose weight is non-zero are encoded. That is not just an
+        optimisation: ATOMICA has never seen a half-formed ligand, and at high
+        `t` the predicted `x0_hat` is not a chemically plausible molecule, so
+        running the critic there would spend its influence on inputs outside its
+        training distribution. `tests/test_critic_roundtrip.py` measures the
+        consequence directly -- the distance saturates and turns over once the
+        ligand leaves the pocket, so a gradient taken there can point the wrong
+        way.
+        """
+        from atomica_interface.critic import lambda_schedule
+
+        weights = lambda_schedule(t_int, self.T, self.critic_weight,
+                                  mode=self.critic_schedule, cutoff=self.critic_cutoff)
+
+        # Coordinates come back in the DDPM's normalised, centre-of-mass-free
+        # frame; ATOMICA needs angstrom. The centring itself is harmless because
+        # the encoder is translation invariant (asserted in the round-trip test),
+        # but the scale is not.
+        norm_x = self.ddpm.norm_values[0]
+        x_lig_hat = xh_lig_hat[:, :self.x_dims] * norm_x
+        x_pocket = xh_pocket[:, :self.x_dims] * norm_x
+
+        lig_split = torch.split(x_lig_hat, ligand['size'].tolist())
+        pocket_split = torch.split(x_pocket, pocket['size'].tolist())
+
+        # The loader strips the `critic_` prefix, so these are ATOMICA's own
+        # field names (see LigandPocketDatasetPT.__getitem__).
+        structural = ('A', 'B', 'block_lengths', 'segment_ids',
+                      'pocket_atom_order', 'lig_atom_order')
+        target_key = 'graph_repr_true' if self.critic.level == 'graph' \
+            else 'unit_repr_true'
+
+        metas, ligs, pockets, targets, keep = [], [], [], [], []
+        for i, meta in enumerate(data['critic_meta']):
+            # A complex without cached critic metadata simply does not get the
+            # term; it still trains normally on the diffusion loss.
+            if meta is None or float(weights[i]) == 0.0:
+                continue
+            if len(meta['lig_atom_order']) != len(lig_split[i]):
+                # Size-filter or featurisation drift between the cache and the
+                # stored coordinates. Skipping is correct; asserting would kill
+                # a multi-day run over one bad complex.
+                continue
+            metas.append({k: meta[k].to(x_lig_hat.device) for k in structural})
+            ligs.append(lig_split[i])
+            pockets.append(pocket_split[i])
+            targets.append(meta[target_key])
+            keep.append(i)
+
+        if not keep:
+            return None, {}
+
+        distances = self.critic(metas, pockets, ligs,
+                                torch.stack(targets).to(x_lig_hat.device))
+
+        weighted = torch.zeros_like(weights, dtype=distances.dtype)
+        keep_idx = torch.tensor(keep, device=distances.device, dtype=torch.long)
+        weighted[keep_idx] = weights[keep_idx].to(distances.dtype) * distances
+
+        return weighted, {
+            'critic_distance': distances.mean(),
+            'critic_weighted': weighted[keep_idx].mean(),
+            'critic_frac_applied': torch.tensor(
+                len(keep) / max(len(weights), 1), device=distances.device),
+        }
 
     def lj_potential(self, atom_x, atom_one_hot, batch_mask):
         adj = batch_mask[:, None] == batch_mask[None, :]

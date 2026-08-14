@@ -149,6 +149,7 @@ def ligand_blocks_from_arrays(
     bond_index,
     bond_type,
     fragmentation_method: Optional[str] = DEFAULT_FRAGMENTATION,
+    return_atom_order: bool = False,
 ):
     """Build ATOMICA ligand blocks from raw coordinates and an explicit bond table.
 
@@ -163,6 +164,10 @@ def ligand_blocks_from_arrays(
         bond_index: ``[2, n_bonds]`` endpoints; both directions may be present.
         bond_type: ``[n_bonds]`` 1=single, 2=double, 3=triple, 4=aromatic, matching
             ATOMICA's ``ID2BOND``.
+        return_atom_order: also return the permutation taking record ligand rows
+            back to input atom indices. Required by the critic, which writes
+            predicted coordinates into a cached record and would otherwise
+            assign them to the wrong atoms.
     """
     from ATOMICA.data.converter.atom_blocks_to_frag_blocks import (
         atom_blocks_to_frag_blocks,
@@ -191,7 +196,8 @@ def ligand_blocks_from_arrays(
         )
 
     if fragmentation_method is None:
-        return atom_blocks
+        order = np.arange(len(atom_blocks), dtype=np.int64)
+        return (atom_blocks, order) if return_atom_order else atom_blocks
 
     # The record stores each bond twice (once per direction); RDKit wants it once.
     bond_index = np.asarray(bond_index).astype(np.int64)
@@ -207,9 +213,53 @@ def ligand_blocks_from_arrays(
         seen.add(key)
         bonds.append((key[0], key[1], int(bond_type[k])))
 
+    if return_atom_order:
+        return fragment_atom_blocks(atom_blocks, bonds, fragmentation_method)
     return atom_blocks_to_frag_blocks(
         atom_blocks, bonds=bonds, fragmentation_method=fragmentation_method
     )
+
+
+def fragment_atom_blocks(atom_blocks, bonds, fragmentation_method: str):
+    """Fragment per-atom blocks, returning the blocks **and** the atom order.
+
+    `atom_blocks_to_frag_blocks` discards the grouping that `tokenize_3d`
+    computes, but the critic needs it: fragmentation reorders ligand atoms into
+    fragment blocks, so a record's ligand rows are a permutation of the input
+    atom order. Without that permutation, coordinates written into a record are
+    silently misassigned to the wrong atoms.
+
+    Returns ``(blocks, atom_order)`` where ``atom_order[k]`` is the input atom
+    index occupying record row ``k`` of the ligand segment (excluding the
+    synthetic global atom).
+    """
+    from ATOMICA.data.tokenizer.tokenize_3d import tokenize_3d
+
+    smis, idxs = tokenize_3d(
+        [block.units[0].element for block in atom_blocks],
+        [block.units[0].coordinate for block in atom_blocks],
+        smiles=None, bonds=bonds, fragmentation_method=fragmentation_method,
+    )
+
+    VOCAB.load_tokenizer(fragmentation_method)
+    blocks, atom_order = [], []
+    for smi, group_idx in zip(smis, idxs):
+        block = Block(
+            symbol=VOCAB.abrv_to_symbol(smi),
+            units=[atom_blocks[i].units[0] for i in group_idx],
+        )
+        assert block.symbol != VOCAB.UNK
+        blocks.append(block)
+        atom_order.extend(int(i) for i in group_idx)
+
+    # Fragmentation must partition the atoms: every atom exactly once, or the
+    # permutation is not a permutation and every downstream row is wrong.
+    if sorted(atom_order) != list(range(len(atom_blocks))):
+        raise ValueError(
+            f"fragmentation did not partition the ligand: {len(atom_order)} "
+            f"atoms placed over {len(atom_blocks)} inputs"
+        )
+    return blocks, np.asarray(atom_order, dtype=np.int64)
 
 
 def ligand_blocks_from_mol(mol, fragmentation_method: Optional[str] = DEFAULT_FRAGMENTATION):
