@@ -199,6 +199,36 @@ class LigandPocketDDPM(pl.LightningModule):
             print("Freezing backbone for ATOMICA adapter training...")
             net_dynamics.freeze_backbone()
 
+        # --- LoRA ---
+        # `lora_rank` had been in the configs since the arm-D runs but nothing
+        # read it, so arm D was full backbone fine-tuning under a misleading
+        # name. It is now implemented, and it is what the critic arm trains: the
+        # critic runs with the ATOMICA adapter OFF (the cached embeddings derive
+        # from a two-segment encoding containing the reference ligand and cannot
+        # be a sampling-time input), so without LoRA a frozen backbone would
+        # leave the loss with nothing to update.
+        self.lora_rank = egnn_params.__dict__.get('lora_rank') or 0
+        if self.lora_rank > 0:
+            from equivariant_diffusion.lora import (
+                inject_lora, mark_only_lora_trainable, summarize,
+            )
+
+            n = inject_lora(
+                net_dynamics.egnn if hasattr(net_dynamics, 'egnn') else net_dynamics,
+                rank=self.lora_rank,
+                alpha=egnn_params.__dict__.get('lora_alpha', 16),
+                dropout=egnn_params.__dict__.get('lora_dropout', 0.0),
+            )
+            if n == 0:
+                raise RuntimeError(
+                    "lora_rank > 0 but no linear layers matched the LoRA "
+                    "targets; check equivariant_diffusion.lora.DEFAULT_TARGETS "
+                    "against the EGNN's module names."
+                )
+            if self.freeze_backbone:
+                mark_only_lora_trainable(net_dynamics)
+            print(f"LoRA rank {self.lora_rank}: {summarize(net_dynamics)}")
+
         self.ddpm = ddpm_models[self.mode](
                 dynamics=net_dynamics,
                 atom_nf=self.atom_nf,
@@ -226,6 +256,30 @@ class LigandPocketDDPM(pl.LightningModule):
         if hasattr(self.ddpm.dynamics, 'freeze_backbone') and \
            getattr(self.ddpm.dynamics, 'atomica_nf', None) and self.freeze_backbone:
              self.ddpm.dynamics.freeze_backbone()
+
+        # 1b. LoRA-only training. When the ATOMICA adapter is off (the critic
+        # arm), the branch below has no cross_attn to key on and would fall
+        # through to the generic optimizer, which is correct but silently uses
+        # `lr` rather than `adapter_lr`. LoRA factors are the adapted
+        # parameters, so they get adapter_lr and are reported explicitly --
+        # a run that trains nothing should say so loudly, not train quietly.
+        if getattr(self, 'lora_rank', 0) > 0:
+            from equivariant_diffusion.lora import lora_parameters
+
+            lora_params = lora_parameters(self.ddpm)
+            other = [p for n, p in self.ddpm.named_parameters()
+                     if p.requires_grad and 'lora_A' not in n and 'lora_B' not in n]
+            if not lora_params:
+                raise RuntimeError("LoRA is enabled but no LoRA parameters are "
+                                   "trainable; nothing would be learned.")
+            groups = [{'params': lora_params, 'lr': self.adapter_lr}]
+            if other:
+                groups.append({'params': other, 'lr': self.lr})
+            print(f"LoRA optimizer: {sum(p.numel() for p in lora_params):,} LoRA "
+                  f"parameters at lr={self.adapter_lr:.2e}"
+                  + (f", {sum(p.numel() for p in other):,} other at "
+                     f"lr={self.lr:.2e}" if other else " (nothing else trainable)"))
+            return torch.optim.AdamW(groups, amsgrad=True, weight_decay=1e-12)
 
         # 2. Separate learning rates for backbone vs adapter (if using adapter)
         if hasattr(self.ddpm.dynamics, 'cross_attn') and self.ddpm.dynamics.cross_attn is not None:

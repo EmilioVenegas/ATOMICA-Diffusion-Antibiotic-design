@@ -22,8 +22,12 @@ pocket_representation: 'full-atom'
 # teacher in the loss only: it sees the true ligand as a *label*, never as an
 # input, so sampling needs no ATOMICA at all and cannot be bottlenecked by the
 # cross-system transfer that Phase 2 resolved as negative
-# (docs/experiment-plan.md). The backbone stays frozen so the comparison against
-# arm B is a comparison of objectives, not of capacity.
+# (docs/experiment-plan.md).
+#
+# The conditioning adapter is therefore switched OFF here (egnn_params.atomica_nf
+# is null) and the pretrained backbone stays frozen; LoRA on the EGNN is what the
+# critic's gradient updates. The control arm is this same config with
+# critic_params.enabled False, so the two differ only in the objective.
 #
 # Requires scripts/add_critic_targets.py to have been run over the data
 # directory; complexes without cached critic fields train on the diffusion loss
@@ -111,9 +115,20 @@ egnn_params:
   sin_embedding: False
   aggregation_method: 'sum'
   normalization_factor: 100
-  atomica_nf: 32
-  lora_rank: 0
+  # ATOMICA conditioning adapter OFF. This is deliberate and load-bearing.
+  # The cached pocket_atomica_embeddings are read off a two-segment encoding
+  # whose segment 1 is the reference ligand, so feeding them to the model as an
+  # input would leak the ground truth at sampling time; and recomputing them
+  # pocket-only would be both a train/test mismatch and degenerate (cosine
+  # 1.0000 between pockets, results/featurization_probe). The critic uses
+  # ATOMICA as a training-time teacher instead, so the sampler is pure DiffSBDD
+  # and needs no ATOMICA at all.
+  atomica_nf: null
+  # With the adapter off and the backbone frozen, LoRA is what the critic's
+  # gradient updates. Rank 8 on the EGNN's edge/node/coord MLPs.
+  lora_rank: 8
   lora_alpha: 16
+  lora_dropout: 0.0
   timestep_adaptive: False
   gradient_checkpointing: True    # required for RTX 4060 8GB with full-atom pockets
 
