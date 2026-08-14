@@ -15,7 +15,7 @@ from. Numbers in this document were re-verified against the repository on
 | **2** | Does a pose scorer generalise to unseen systems? | **resolved: no** — `results/pose_scorer/README.md` |
 | **3** | Interaction hotspot fields | **resolved: no** — `results/hotspot/README.md` |
 | **3b** | Does correcting the pocket block vocabulary restore conditioning? | **resolved: no** — `results/featurization_probe/README.md` |
-| **4** | **ATOMICA as a training-time critic** | **current work** — not yet implemented |
+| **4** | **ATOMICA as a training-time critic** | **current work** — implemented and gated; `results/critic_gate/README.md`. Not yet trained |
 | 5 | Conditioning on the partially-denoised ligand, low-noise steps only | after 4, and only if 4 shows signal |
 | 6 | ATOMICA as a selector over generated molecules | blocked by 2 |
 | 7 | Distillation to a pocket-only encoder | dead — see Phase 3b |
@@ -281,6 +281,29 @@ Practical notes for whoever implements it:
   If the distance is not ordered, the loss has no gradient worth following, and this
   costs minutes rather than GPU-days to check.
 
+### The gate has been run and it passes — `results/critic_gate/README.md`
+
+92 targets, 1,662 poses, per target. Every pose of a target is the same molecule
+rigidly displaced, so composition is controlled by construction.
+
+| metric | rho(all) | rho(<4 Å) | AUROC |
+|---|---|---|---|
+| **`graph_cosine` (pretrained)** | **+0.386** | **+0.558** | **0.926** |
+| `graph_cosine` (permuted weights) | +0.149 | +0.061 | 0.697 |
+| `contacts` (no-learning floor) | +0.253 | +0.355 | 0.837 |
+| smina (reference) | +0.281 | +0.465 | 0.844 |
+
+Pretraining is what carries it: in the low-RMSD regime the critic is weighted
+toward, the permuted-weight control has essentially no signal. Three consequences
+are already encoded in `DiffSBDD/configs/crossdock_fullatom_critic.yml`: use
+`graph_cosine`, ramp `lambda` off at high noise, and raise `max_weight` well above
+1.0.
+
+**`pocket_pool` must not be used as the critic metric**, despite scoring the best
+raw AUROC of any variant (0.949). It scores 0.923 with *random* weights, so almost
+all of that is architecture and geometry rather than learned interaction
+chemistry — see the gotcha below.
+
 ### Secondary — conditioning on `x̂₀` during sampling
 
 Only if the critic shows signal. At step *t*, form the two-segment complex from the
@@ -332,6 +355,10 @@ numeric key (LMDB orders keys lexicographically: `'0'`, `'1'`, `'10'`, `'100'`, 
 | `val` | 100 | 93 |
 | `test` | 100 | 93 |
 
+**Both defects below are now fixed** (`scripts/build_holdout_split.py`,
+`data/holdout_target_split.pt`); the description is kept because the reasoning
+still governs how the splits may be used.
+
 Good news: the split is **target-aware** — zero targets shared between train and the
 held-out set. Two problems:
 
@@ -347,6 +374,34 @@ held-out set. Two problems:
    substantially within-target.
 
 The LMDB holds 2,346 distinct targets; the official split covers 1,986 of them.
+
+#### How they were fixed
+
+`scripts/build_holdout_split.py` partitions the holdout's 93 targets into two
+disjoint groups — by target, not by complex, because CrossDocked holds many docked
+poses per target and a per-complex split puts the same protein on both sides. It
+asserts the official split really is target-aware before relying on it.
+
+The official holdout names only 100 complexes, which is thin. Those 93 targets carry
+**8,330 LMDB entries** between them, **none in train's index list**, so every one is
+as clean as the official 100. The script emits an expanded list alongside the strict
+one — all entries on a held-out target, capped at 30 per target so a single
+2,567-entry target cannot dominate — with the official complexes ranked first, so
+the expanded list is always a superset and the strict holdout stays recoverable.
+
+`process_expert_atomica.py --holdout_expand --splits val,test` then produced:
+
+| | targets | complexes | shares targets with train |
+|---|---:|---:|---:|
+| `val` | 41 | 499 | **0** |
+| `test` | 44 | 544 | **0** |
+| *old `val` (kept as `val_contaminated_legacy/`)* | 17 | 1,000 | **9 of 17** |
+
+The 9-of-17 overlap is measured against a 4,000-file sample of train, so the true
+figure is higher. The old directories are retained rather than deleted.
+
+`--legacy_fill` restores the old behaviour behind an explicit flag. The assertions
+that val/test are disjoint from each other and from train now run on every build.
 
 `affinity_info.pkl` has 184,087 entries keyed by ligand filename without extension,
 each `{'rmsd', 'pk', 'vina'}`. Every one of the 164,814 LMDB complexes has a Vina
@@ -406,33 +461,85 @@ two-segment encoding whose segment 1 is the *reference* ligand. It is therefore
 target. This is the leakage distinction above, made concrete. The script's docstring
 flags it; do not let it be mistaken for an oversight or quietly used as conditioning.
 
-**A run is in flight** (as of this writing): `python scripts/process_expert_atomica.py
---no_expert_filter --stats_every 5000`, writing to `data/processed_expert_atomica/`.
-Observed rate ~440 complexes/min at ~101 KB each; `val` and `test` are already at
-their 1,000 caps and `train` is filling. Upper bound is the 98,995 train candidates
-minus size-filter rejections, so expect on the order of 10 GB and a few hours. Do not
-start it again while it is running and do not delete anything under `data/`.
+**That run has finished.** `data/processed_expert_atomica/` now holds:
+
+| split | complexes | targets |
+|---|---:|---:|
+| `train` | 83,921 | ~1,893 |
+| `val` | 499 | 41 |
+| `test` | 544 | 44 |
+
+83,921 against 85,206 candidates passing the size filter, the ~1,285 difference
+being per-complex fragmentation and encoder failures. `val_contaminated_legacy/`
+and `test_contaminated_legacy/` are the superseded directories, kept, not deleted.
+
+### `size_distribution.npy` was regenerated, and the script had two bugs
+
+`scripts/create_2d_histogram.py` hardcoded its axes to `(100, 500)` while the
+preprocessing filter keeps 10–40 ligand atoms and 350–800 pocket atoms. That
+**clamped 72.3% of complexes into the final pocket bin** and set
+`max_num_nodes = len(histogram) - 1` to 99 for ligands that cannot exceed 40. The
+file it was overwriting was `(41, 801)`, so the wrong shape would also have been a
+silent regression. Defaults are now 41 / 801 and any clamping is counted and
+reported. It also globbed train + val + test; since this histogram conditions
+sampled ligand size, that let the held-out sets inform the generator's size prior.
+It now defaults to `train` alone.
+
+The old histogram was biased large exactly as predicted:
+
+| | complexes | mean ligand heavy atoms | p5 / p50 / p95 |
+|---|---:|---:|---|
+| old (Vina-filtered) | 23,149 | 27.44 | 19 / 27 / 37 |
+| **new (no expert filter)** | **83,921** | **22.61** | 10 / 23 / 34 |
+
+A shift of −4.83 heavy atoms — the size confound the expert filter introduced.
 
 ## Immediate next steps
 
-1. **Let the preprocessing run finish.** Check `train`/`val`/`test` counts and the
-   skip-reason tally it prints at the end; a large `size_filter_*` or
-   `unhandled_exception` count means the run needs revisiting rather than using.
-2. **Build a genuine val/test separation.** Split the 93 held-out targets in half
-   *by target* into disjoint val and test sets, and change
-   `scripts/process_expert_atomica.py` to fill its val/test buckets from those
-   targets instead of from complexes outside the official split. Both defects
-   documented above — `val == test`, and the leftover pool sharing 1,327 targets with
-   train — have to be fixed together or the fix is cosmetic.
-3. **Regenerate `size_distribution.npy`** with `scripts/create_2d_histogram.py`. The
-   file currently at `data/processed_expert_atomica/size_distribution.npy` dates from
-   November 2025 and describes the old, Vina-filtered dataset; `DiffSBDD/train.py`
-   loads it from the data directory and it is what conditions sampled ligand size.
-   With the size-confounded filter gone, the old histogram is biased large.
-4. **Review and merge `fix/expert-preprocessing-featurization`** into `main`.
-5. **Implement the critic loss** and run the cheap sanity gate first (see above).
-   Fine-tune from `my_logs/` checkpoints with the backbone frozen.
-6. **Evaluate with pocket-aware metrics** — see below.
+Steps 1–5 of the previous revision are **done**: the preprocessing run finished
+(83,921 train complexes), val/test were rebuilt target-disjoint (499 / 544 over
+41 / 44 targets), `size_distribution.npy` was regenerated on correct axes,
+`fix/expert-preprocessing-featurization` was merged into `main`, and the critic
+loss is implemented and gated. What remains:
+
+1. **Finish `scripts/add_critic_targets.py` over all three splits.** It caches
+   `ATOMICA(pocket, x_true)` and the coordinate-independent record structure that
+   makes the encoder differentiable. Complexes without those fields still train,
+   just without the critic term. ~0.16 s/complex on GPU.
+2. **Sweep `critic_params.max_weight` on a short run.** At the config's 1.0 the
+   critic is ~0.3% of the objective (measured: distance 0.0114, weighted 0.0070,
+   diffusion nll 0.60) and will not move the model. Expect 1e1–1e2. The thing to
+   watch is `critic_distance/train` actually falling, not the total loss.
+3. **Fine-tune from `my_logs/` with the backbone frozen**, and run a
+   `critic_params.enabled: False` arm from the same checkpoint as its control.
+   Because ATOMICA is frozen and appears only in the loss, both arms sample
+   identically and any difference is attributable to the objective.
+4. **Evaluate with pocket-aware metrics** — `scripts/cross_dock_specificity.py`,
+   see below. Needs `smina` (`conda install -c conda-forge smina`), which is not
+   installed, and regenerated receptor PDBs (next item).
+5. **Regenerate `data/receptor_pdbs/`** with `scripts/extract_pocket_pdbs.py`.
+   The 100 pockets there are named `complex_000001…` against the *old,
+   contaminated* test set. Their ids no longer correspond to the rebuilt `test/`,
+   so cross-docking would silently score molecules against the wrong pockets.
+
+### Environment (resolved)
+
+`~/.conda/envs/atomica-interface` now runs both ATOMICA and DiffSBDD training.
+`DiffSBDD/environment.yaml` and the root `pyproject.toml` describe different
+things and the difference has caused confusion: the yaml is the DiffSBDD training
+env (python 3.10.4 / torch 2.0.1 cu118 — the same constraints ATOMICA needs, so
+there is **no** version conflict), while `pyproject.toml` (python 3.12 / torch
+2.2.2) belongs to the Boltz tooling under `scripts/eval/`.
+
+Installed into the conda env under a constraints file pinning `torch==2.0.1` and
+`numpy==1.26.4`, so the CUDA build could not be swapped: `pytorch-lightning==2.3.3`
+(newest line accepting torch 2.0), `torchmetrics==1.4.2`, `wandb`, `imageio`,
+`seaborn`, `PyYAML`, and `setuptools<81` — lightning imports `pkg_resources`,
+which setuptools 81+ drops, and the env had no setuptools at all. Verified after
+install: torch 2.0.1 / CUDA 11.8 available, `torch_scatter` 2.1.2 working.
+
+Note `DiffSBDD/environment.yaml` pins `pytorch-lightning=1.8.4`, which is stale —
+the existing checkpoints were written by 2.5.5.
 
 ## Evaluation, for every generative phase
 
@@ -474,6 +581,20 @@ Accumulated the hard way. Each of these has already cost time.
 - Any hotspot or pocket-scoring result must report a **buriedness baseline**. Protein
   neighbour count alone reaches the 98.2nd percentile on the standard protocol and
   will make a method that measures nothing look excellent.
+- **A control has to be shown to be a floor, not assumed to be one.** The critic gate
+  first used `pocket_pool` as its negative control, because
+  `scripts/featurize_block_level.py` states it is "identical for every pose of a
+  target". The *input* pocket blocks are; their representations are not, being
+  computed with message passing from the ligand. The intended floor scored 0.949
+  AUROC against the real metric's 0.926. A permuted-weight run settled it —
+  `pocket_pool` scores 0.923 with random weights — but only because that control was
+  added. Any "representation X carries signal" claim needs a same-architecture,
+  same-scale, no-learned-information comparison; permuting each weight tensor's
+  entries preserves every marginal and destroys only what was learned.
+- **Check that histogram and array axes cover the data they are built from.**
+  `create_2d_histogram.py` clamped 72.3% of complexes into its final pocket bin for
+  a year because its hardcoded `(100, 500)` did not match a filter admitting 800
+  pocket atoms. Nothing errored.
 - Report per-target/per-pocket, and beware evaluating several feature sets and
   reporting the best — that is how the retracted 22-target result happened.
 
