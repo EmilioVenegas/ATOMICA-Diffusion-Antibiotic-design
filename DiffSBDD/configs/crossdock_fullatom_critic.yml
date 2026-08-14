@@ -28,6 +28,10 @@ pocket_representation: 'full-atom'
 # Requires scripts/add_critic_targets.py to have been run over the data
 # directory; complexes without cached critic fields train on the diffusion loss
 # alone.
+# The critic holds ATOMICA's forward graph for backprop, on top of the EGNN's.
+# On an 8 GB card, batch_size 4 without gradient checkpointing OOMs during the
+# critic's encoder pass; batch_size 2 with checkpointing (below) fits. If you
+# raise this, raise accumulate_grad_batches instead.
 batch_size: 2
 accumulate_grad_batches: 16       # effective batch = 32
 lr: 1.0e-5
@@ -61,14 +65,28 @@ critic_params:
   # sanity gate measures its ordering against RMSD before any training.
   distance: 'cosine'
   level: 'graph'
-  # lambda at t = 0. THIS ALMOST CERTAINLY NEEDS RAISING. Measured on a real
-  # batch of 4 complexes with these settings: critic distance 0.0114, weighted
-  # 0.0070, against a diffusion nll of 0.60 -- so at max_weight 1.0 the critic
-  # is ~0.3% of the loss and will not move the model. Cosine distance on a 32-d
-  # representation is intrinsically small (order 1e-2 at 1 A of displacement,
-  # per tests/test_critic_roundtrip.py). Expect to need 1e1-1e2 here; sweep it
-  # on a short run and watch critic_distance/train actually fall.
-  max_weight: 1.0
+  # lambda at t = 0, calibrated by gradient norm rather than by loss magnitude
+  # (scripts/calibrate_critic_weight.py, 48 batches over the val split).
+  # Comparing the two *losses* answers the wrong question: cosine distance on a
+  # 32-d representation is order 1e-2 while the diffusion nll is order 1e0, so
+  # the loss ratio makes the critic look negligible at a lambda that would
+  # actually dominate. What matters is the gradient each term contributes:
+  #
+  #     ||grad|| diffusion              3.53e-04
+  #     ||grad|| critic (at lambda=1)   4.21e-06
+  #
+  # and the ratio varies strongly with noise level -- the critic's gradient is
+  # relatively WEAKEST at low t, which is exactly where the ramp weights it
+  # most, because x0_hat is already close there:
+  #
+  #     t/T <= 0.25    median ratio 482   -> lambda 53.6 for a 10% share
+  #     0.25-0.5       median ratio 108   -> lambda 12
+  #     t/T > 0.5      median ratio  64   -> lambda 7.1
+  #
+  # 50 gives the critic roughly a tenth of the gradient in the band it is
+  # applied to. Sweep 10-100 and confirm critic_distance/train actually falls;
+  # these are norms at the initial parameters, not a claim about dynamics.
+  max_weight: 50.0
   # 'ramp' decays linearly to zero at cutoff*T; 'cutoff' is a hard switch;
   # 'constant' is the ablation. Restricting to low t is not a tuning choice --
   # ATOMICA has never seen a half-formed ligand, and the round-trip test shows
