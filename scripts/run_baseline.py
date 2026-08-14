@@ -58,7 +58,8 @@ from lightning_modules import LigandPocketDDPM
 from analysis.molecule_builder import build_molecule, process_molecule
 
 
-def build_pocket_dict(data, n_samples, device, use_atomica=True):
+def build_pocket_dict(data, n_samples, device, use_atomica=True,
+                      allow_leaky_conditioning=False):
     """
     Construct the pocket dict that ddpm.sample_given_pocket() expects,
     tiled n_samples times, from a single deserialized .pt record.
@@ -80,6 +81,35 @@ def build_pocket_dict(data, n_samples, device, use_atomica=True):
     }
 
     if use_atomica and 'pocket_atomica_embeddings' in data:
+        # LEAKAGE GUARD. Since the preprocessing rewrite (commit dd1c756),
+        # `pocket_atomica_embeddings` is read off a TWO-SEGMENT ATOMICA encoding
+        # whose segment 1 is the *reference ligand*. ATOMICA passes messages
+        # between segments, so those pocket rows carry information about the
+        # true ligand -- the very molecule being generated. Feeding them in here
+        # conditions sampling on the answer.
+        #
+        # This is the distinction docs/experiment-plan.md turns on: the same
+        # tensor is a legitimate *label* in a training loss (that is what the
+        # ATOMICA critic uses it for) and illegitimate as a sampling-time
+        # *input*. Nothing about the tensor announces which it is, so the check
+        # has to live at the point of use.
+        #
+        # A cache written before dd1c756 held single-segment, pocket-only
+        # embeddings: not leaky, but measured to be degenerate
+        # (cosine 1.0000 between different pockets, results/featurization_probe).
+        if not allow_leaky_conditioning:
+            raise RuntimeError(
+                "Refusing to condition sampling on 'pocket_atomica_embeddings': "
+                "in the current cache these are computed from a two-segment "
+                "encoding containing the reference ligand, so using them as a "
+                "sampling input leaks the ground-truth answer. They are valid "
+                "only as a critic target during training. Pass "
+                "--allow_leaky_conditioning to override deliberately (e.g. to "
+                "reproduce a pre-dd1c756 number), or --no_atomica to sample "
+                "without conditioning."
+            )
+        print("WARNING: conditioning on ground-truth-derived ATOMICA "
+              "embeddings. Results are NOT a valid generative benchmark.")
         emb = data['pocket_atomica_embeddings'].to(device, FLOAT_TYPE)  # [N, 32]
         pocket['atomica_embeddings'] = emb.repeat(n_samples, 1)
 
@@ -141,6 +171,12 @@ def main():
     p.add_argument('--timesteps',  type=int, default=100)
     p.add_argument('--no_atomica', action='store_true',
                    help='Ignore pre-computed ATOMICA embeddings (condition A)')
+    p.add_argument('--allow_leaky_conditioning', action='store_true',
+                   help='condition on pocket_atomica_embeddings even though the '
+                        'current cache derives them from a two-segment encoding '
+                        'containing the reference ligand. Results are not a '
+                        'valid generative benchmark; see the guard in '
+                        'build_pocket_dict().')
     p.add_argument('--sanitize',   action='store_true', default=True)
     args = p.parse_args()
 
@@ -183,7 +219,8 @@ def main():
         for _ in range(n_batches):
             pocket = build_pocket_dict(
                 data, args.batch_size, device,
-                use_atomica=not args.no_atomica)
+                use_atomica=not args.no_atomica,
+                allow_leaky_conditioning=args.allow_leaky_conditioning)
             mols = generate_from_pocket(
                 model, pocket, args.batch_size,
                 timesteps=args.timesteps, sanitize=args.sanitize)
