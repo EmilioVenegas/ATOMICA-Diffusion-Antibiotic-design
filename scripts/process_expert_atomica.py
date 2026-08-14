@@ -306,6 +306,14 @@ def parse_args():
     parser.add_argument("--split", default="data/crossdocked_split.pt",
                         help="standard CrossDocked split (indices into LMDB cursor order)")
     parser.add_argument("--expert_split", default="expert_split.pt")
+    parser.add_argument("--no_expert_filter", action="store_true",
+                        help="ignore expert_split.pt and keep every complex in the "
+                             "standard split. The expert filter is Vina < -8.5, which "
+                             "is strongly size-confounded (r = -0.58 between heavy-atom "
+                             "count and Vina score; kept ligands average 27.8 heavy "
+                             "atoms against 20.5 discarded). Selecting training data by "
+                             "docking also makes any later docking-based evaluation "
+                             "circular.")
     parser.add_argument("--output", default="data/processed_expert_atomica")
     parser.add_argument("--model_config", default="ATOMICA/pretrain/pretrain_model_config.json")
     parser.add_argument("--model_weights", default="ATOMICA/pretrain/pretrain_model_weights.pt")
@@ -357,16 +365,20 @@ def main():
         return
     print(f"Loaded {type(encoder).__name__} (denoising heads disabled).")
 
-    print(f"Loading expert split from {args.expert_split}...")
-    expert_split = torch.load(args.expert_split)
-    if isinstance(expert_split, dict) and "train" in expert_split:
-        expert_filenames = set(expert_split["train"])
-    elif isinstance(expert_split, list):
-        expert_filenames = set(expert_split)
+    if args.no_expert_filter:
+        expert_filenames = None
+        print("Expert filter DISABLED: keeping every complex in the standard split.")
     else:
-        print("Unknown expert split format; expected dict with 'train' or a list.")
-        return
-    print(f"Loaded {len(expert_filenames)} expert filenames.")
+        print(f"Loading expert split from {args.expert_split}...")
+        expert_split = torch.load(args.expert_split)
+        if isinstance(expert_split, dict) and "train" in expert_split:
+            expert_filenames = set(expert_split["train"])
+        elif isinstance(expert_split, list):
+            expert_filenames = set(expert_split)
+        else:
+            print("Unknown expert split format; expected dict with 'train' or a list.")
+            return
+        print(f"Loaded {len(expert_filenames)} expert filenames.")
 
     print(f"Loading standard split from {args.split}...")
     std_split = torch.load(args.split)
@@ -408,7 +420,7 @@ def main():
             if "ligand_filename" not in data:
                 note("no_ligand_filename")
                 continue
-            if data["ligand_filename"] not in expert_filenames:
+            if expert_filenames is not None and data["ligand_filename"] not in expert_filenames:
                 note("not_expert")
                 continue
 
