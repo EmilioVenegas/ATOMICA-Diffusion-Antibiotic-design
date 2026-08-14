@@ -14,8 +14,11 @@ See docs/experiment-plan.md.
 """
 
 __all__ = [
+    "atom_segment_ids",
     "interface_data",
+    "ligand_blocks_from_arrays",
     "ligand_blocks_from_mol",
+    "pocket_blocks_from_arrays",
     "pocket_blocks_from_pdb",
     "summarize",
     "to_batch",

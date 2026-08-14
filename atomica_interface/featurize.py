@@ -37,6 +37,26 @@ from ATOMICA.data.pdb_utils import VOCAB, Atom  # noqa: E402
 # the block vocabulary, so this default is tied to the pretrained weights.
 DEFAULT_FRAGMENTATION = "PS_300"
 
+# CrossDocked LMDB records encode residues as 1-based indices into the
+# alphabetically-sorted three-letter codes (the `AA_NAME_NUMBER` convention used by
+# the TargetDiff/Pocket2Mol preprocessing that produced `crossdocked_pocket10`).
+# Verified against `residue_natoms`: every one of the 20 types matches its expected
+# heavy-atom count for >97% of residues, the remainder being terminal OXT or
+# incomplete side chains.
+AA_NUMBER_TO_ABRV = [
+    "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE",
+    "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL",
+]
+
+# Atomic number -> element symbol. Covers the elements CrossDocked pockets and
+# ligands actually contain; anything outside it is rejected rather than guessed,
+# because a wrong element silently corrupts the block chemistry.
+ATOMIC_NUMBER_TO_SYMBOL = {
+    1: "H", 5: "B", 6: "C", 7: "N", 8: "O", 9: "F", 11: "Na", 12: "Mg",
+    15: "P", 16: "S", 17: "Cl", 19: "K", 20: "Ca", 25: "Mn", 26: "Fe",
+    27: "Co", 29: "Cu", 30: "Zn", 34: "Se", 35: "Br", 53: "I",
+}
+
 
 def pocket_blocks_from_pdb(
     pdb_path: str,
@@ -52,6 +72,144 @@ def pocket_blocks_from_pdb(
 
     chains = pdb_to_list_blocks(pdb_path, selected_chains=selected_chains)
     return [block for chain in chains for block in chain]
+
+
+def pocket_blocks_from_arrays(
+    coords,
+    elements,
+    atom2residue,
+    residue_aa,
+):
+    """Build one ATOMICA block per residue from raw arrays (no PDB file needed).
+
+    This is the LMDB counterpart of :func:`pocket_blocks_from_pdb`. The CrossDocked
+    records already carry the residue grouping (``protein_atom2residue``) and the
+    residue identity (``amino_acid``), so real amino-acid block symbols can be
+    recovered without re-parsing a structure file.
+
+    Returns ``(blocks, atom_index)`` where ``atom_index`` gives, for every atom
+    emitted into the blocks and **in block order**, its row in the input arrays.
+    Callers need this to keep any per-atom quantity aligned with the per-atom
+    embeddings that come back from the encoder.
+
+    Args:
+        coords: ``[n_atoms, 3]`` atom coordinates.
+        elements: ``[n_atoms]`` atomic numbers.
+        atom2residue: ``[n_atoms]`` residue index for each atom.
+        residue_aa: ``[n_residues]`` 1-based amino-acid codes (see
+            :data:`AA_NUMBER_TO_ABRV`).
+    """
+    coords = np.asarray(coords, dtype=np.float64)
+    elements = np.asarray(elements).astype(np.int64)
+    atom2residue = np.asarray(atom2residue).astype(np.int64)
+    residue_aa = np.asarray(residue_aa).astype(np.int64)
+
+    if not (len(coords) == len(elements) == len(atom2residue)):
+        raise ValueError("coords, elements and atom2residue must agree in length")
+
+    # Stable sort groups atoms by residue while preserving intra-residue order, so
+    # the emitted blocks are contiguous even if the source arrays are not.
+    order = np.argsort(atom2residue, kind="stable")
+
+    blocks: List[Block] = []
+    atom_index: List[int] = []
+
+    start = 0
+    while start < len(order):
+        residue = atom2residue[order[start]]
+        end = start
+        while end < len(order) and atom2residue[order[end]] == residue:
+            end += 1
+
+        units, kept = [], []
+        for row in order[start:end]:
+            symbol = ATOMIC_NUMBER_TO_SYMBOL.get(int(elements[row]))
+            if symbol is None:
+                # Unrecognised element: drop the atom rather than mistyping it.
+                continue
+            units.append(
+                Atom(atom_name=symbol, coordinate=coords[row].tolist(), element=symbol)
+            )
+            kept.append(int(row))
+
+        if units:
+            code = int(residue_aa[residue]) if 0 <= residue < len(residue_aa) else 0
+            abrv = AA_NUMBER_TO_ABRV[code - 1] if 1 <= code <= 20 else "UNK"
+            blocks.append(Block(symbol=VOCAB.abrv_to_symbol(abrv), units=units))
+            atom_index.extend(kept)
+
+        start = end
+
+    return blocks, np.asarray(atom_index, dtype=np.int64)
+
+
+def ligand_blocks_from_arrays(
+    coords,
+    elements,
+    bond_index,
+    bond_type,
+    fragmentation_method: Optional[str] = DEFAULT_FRAGMENTATION,
+):
+    """Build ATOMICA ligand blocks from raw coordinates and an explicit bond table.
+
+    Same output as :func:`ligand_blocks_from_mol`, but sourced from the arrays a
+    CrossDocked LMDB record carries rather than an RDKit molecule. Real bonds are
+    required: without them the ligand cannot be fragmented into the PS_300 blocks
+    the checkpoint was pretrained on.
+
+    Args:
+        coords: ``[n_atoms, 3]`` atom coordinates.
+        elements: ``[n_atoms]`` atomic numbers.
+        bond_index: ``[2, n_bonds]`` endpoints; both directions may be present.
+        bond_type: ``[n_bonds]`` 1=single, 2=double, 3=triple, 4=aromatic, matching
+            ATOMICA's ``ID2BOND``.
+    """
+    from ATOMICA.data.converter.atom_blocks_to_frag_blocks import (
+        atom_blocks_to_frag_blocks,
+    )
+
+    coords = np.asarray(coords, dtype=np.float64)
+    elements = np.asarray(elements).astype(np.int64)
+
+    atom_blocks = []
+    for row in range(len(elements)):
+        symbol = ATOMIC_NUMBER_TO_SYMBOL.get(int(elements[row]))
+        if symbol is None:
+            raise ValueError(f"unknown ligand atomic number {int(elements[row])}")
+        atom_blocks.append(
+            Block(
+                symbol=symbol.lower(),
+                units=[
+                    Atom(
+                        atom_name=symbol,
+                        coordinate=coords[row].tolist(),
+                        element=symbol,
+                        pos_code=VOCAB.atom_pos_sm,
+                    )
+                ],
+            )
+        )
+
+    if fragmentation_method is None:
+        return atom_blocks
+
+    # The record stores each bond twice (once per direction); RDKit wants it once.
+    bond_index = np.asarray(bond_index).astype(np.int64)
+    bond_type = np.asarray(bond_type).astype(np.int64)
+    seen, bonds = set(), []
+    for k in range(bond_index.shape[1]):
+        src, dst = int(bond_index[0, k]), int(bond_index[1, k])
+        if src == dst:
+            continue
+        key = (min(src, dst), max(src, dst))
+        if key in seen:
+            continue
+        seen.add(key)
+        bonds.append((key[0], key[1], int(bond_type[k])))
+
+    return atom_blocks_to_frag_blocks(
+        atom_blocks, bonds=bonds, fragmentation_method=fragmentation_method
+    )
 
 
 def ligand_blocks_from_mol(mol, fragmentation_method: Optional[str] = DEFAULT_FRAGMENTATION):
@@ -202,6 +360,19 @@ def to_batch(data, device="cpu"):
         "lengths": torch.tensor([len(block_lengths)], dtype=torch.long, device=device),
         "segment_ids": torch.tensor(data["segment_ids"], dtype=torch.long, device=device),
     }
+
+
+def atom_segment_ids(data) -> np.ndarray:
+    """Expand a record's per-block segment ids to one entry per atom.
+
+    ``infer()`` returns ``unit_repr`` with one row per atom in the same order as
+    ``data['X']``, but segment membership is stored per block. Expanding it by
+    ``block_lengths`` is what lets a caller pick out just the pocket's rows and keep
+    them aligned with the pocket's coordinates.
+    """
+    block_lengths = np.asarray(data["block_lengths"], dtype=np.int64)
+    segment_ids = np.asarray(data["segment_ids"], dtype=np.int64)
+    return np.repeat(segment_ids, block_lengths)
 
 
 def summarize(data) -> dict:
