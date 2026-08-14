@@ -51,6 +51,7 @@ Usage (from repo root):
 """
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -143,14 +144,28 @@ def dock_one(args):
     return pocket, receptor, scores
 
 
-def build_pairs(sdf_by_pocket, receptors, n_decoy, rng, exhaustiveness, seed):
-    """(molecule set, receptor) pairs: each pocket against its own and n_decoy others."""
+def build_pairs(sdf_by_pocket, receptors, n_decoy, rng, exhaustiveness, seed,
+                pocket_targets=None):
+    """(molecule set, receptor) pairs: each pocket against its own and n_decoy others.
+
+    Decoy pockets are drawn from **different targets** when `pocket_targets` is
+    available. CrossDocked holds many complexes per target, so without that
+    constraint a "decoy" pocket can be the same protein in another docked pose --
+    which a pocket-specific molecule should fit, washing out the contrast the
+    metric exists to measure.
+    """
     pockets = sorted(sdf_by_pocket)
     pairs = []
     for pocket in pockets:
-        others = [p for p in pockets if p != pocket and p in receptors]
         if pocket not in receptors:
             continue
+        own_target = (pocket_targets or {}).get(pocket)
+        others = [
+            p for p in pockets
+            if p != pocket and p in receptors
+            and (own_target is None
+                 or (pocket_targets or {}).get(p) != own_target)
+        ]
         chosen = rng.choice(others, size=min(n_decoy, len(others)), replace=False) \
             if others else []
         for receptor in [pocket, *chosen]:
@@ -290,7 +305,20 @@ def main():
         print(f"No receptor/box pairs under {pdb_dir}. Run "
               f"scripts/extract_pocket_pdbs.py first.")
         return
-    print(f"{len(receptors)} receptors with boxes.")
+    # Written by scripts/extract_pocket_pdbs.py. Without it, decoy pockets can
+    # be other poses of the same protein.
+    targets_path = pdb_dir / "pocket_targets.json"
+    pocket_targets = None
+    if targets_path.exists():
+        with open(targets_path) as fh:
+            pocket_targets = json.load(fh)
+        print(f"{len(receptors)} receptors with boxes, "
+              f"{len(set(pocket_targets.values()))} distinct targets.")
+    else:
+        print(f"{len(receptors)} receptors with boxes. WARNING: no "
+              f"{targets_path.name}; decoy pockets may be other poses of the "
+              f"same protein, which understates specificity. Regenerate with "
+              f"scripts/extract_pocket_pdbs.py.")
 
     rng = np.random.default_rng(args.seed)
     out_path = Path(args.out)
@@ -312,7 +340,8 @@ def main():
                 print(f"Arm {name!r}: no usable SDFs under {path}")
                 continue
             pairs = build_pairs(sdf_by_pocket, receptors, args.n_decoy_pockets,
-                                rng, args.exhaustiveness, args.seed)
+                                rng, args.exhaustiveness, args.seed,
+                                pocket_targets=pocket_targets)
             print(f"\nArm {name!r}: {len(sdf_by_pocket)} pockets, {len(pairs)} "
                   f"docking jobs ({1 + args.n_decoy_pockets} receptors each)")
 

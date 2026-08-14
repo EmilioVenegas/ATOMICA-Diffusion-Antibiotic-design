@@ -1,23 +1,29 @@
 """
 Extract receptor PDB files for the test-set pockets from the CrossDocked LMDB.
 
-Each test .pt file's 'name' field is a direct key into the LMDB.  We look up
-the full atom-level protein structure (protein_pos, protein_atom_name,
-protein_atom_to_aa_type, protein_atom2residue, amino_acid, res_idx) and write
-a proper ATOM-record PDB that AutoDock Vina and PoseBusters can consume.
+A test .pt file's 'name' field is its ligand_filename, which is NOT an LMDB key
+-- LMDB keys are numeric strings. Records are located through the cursor-index
+manifest instead (see main()). We look up the full atom-level protein structure
+(protein_pos, protein_atom_name, protein_atom_to_aa_type, protein_atom2residue,
+amino_acid, res_idx) and write a proper ATOM-record PDB that AutoDock Vina and
+PoseBusters can consume.
 
-Also writes the reference ligand as an SDF file and a <pocket>.box.txt with
-docking box parameters (center + size in Angstroms, 20 Å box).
+Also writes the reference ligand as an SDF file, a <pocket>.box.txt with docking
+box parameters (center + size in Angstroms, 20 Å box), and a pocket_targets.json
+recording which target each pocket belongs to -- cross-docking specificity needs
+decoy pockets drawn from *other proteins*, not other poses of the same one.
+
+By default one receptor is written per target, for the same reason.
 
 Usage (from project root):
     python scripts/extract_pocket_pdbs.py \\
-        --test_dir  DiffSBDD/data/processed_expert_atomica/test \\
+        --test_dir  data/processed_expert_atomica/test \\
         --lmdb_path data/crossdocked_pocket10_processed.lmdb \\
-        --outdir    data/receptor_pdbs \\
-        --n_pockets 100
+        --outdir    data/receptor_pdbs
 """
 
 import argparse
+import json
 import pickle
 import sys
 from pathlib import Path
@@ -157,51 +163,96 @@ def write_docking_box(data, out_path: Path, box_size: float = 20.0):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--test_dir',  type=Path,
-                   default='DiffSBDD/data/processed_expert_atomica/test')
+                   default='data/processed_expert_atomica/test')
     p.add_argument('--lmdb_path', type=Path,
                    default='data/crossdocked_pocket10_processed.lmdb')
     p.add_argument('--outdir',    type=Path, default='data/receptor_pdbs')
-    p.add_argument('--n_pockets', type=int,  default=100)
+    p.add_argument('--n_pockets', type=int,  default=0,
+                   help='cap on pockets written; 0 means no cap')
+    p.add_argument('--manifest',  type=Path,
+                   default='data/lmdb_index_manifest.json',
+                   help='ligand_filename -> LMDB cursor index, from '
+                        'scripts/build_holdout_split.py')
+    p.add_argument('--one_per_target', action='store_true', default=True,
+                   help='write at most one receptor per target (default). '
+                        'Cross-docking needs decoy pockets from other proteins.')
+    p.add_argument('--all_complexes', dest='one_per_target', action='store_false',
+                   help='write every complex, including several per target')
     p.add_argument('--box_size',  type=float, default=20.0,
                    help='Vina docking box edge length (Å)')
     args = p.parse_args()
 
     args.outdir.mkdir(parents=True, exist_ok=True)
 
-    test_files = sorted(args.test_dir.glob('complex_*.pt'))[:args.n_pockets]
+    test_files = sorted(args.test_dir.glob('complex_*.pt'))
     if not test_files:
         raise FileNotFoundError(f'No .pt files found in {args.test_dir}')
+
+    # A `.pt`'s `name` is its ligand_filename, NOT an LMDB key -- LMDB keys are
+    # numeric strings ('0', '1', ...). The previous version passed the filename
+    # to `txn.get` and would have skipped every pocket with "key not found".
+    # The manifest written by scripts/build_holdout_split.py maps
+    # ligand_filename -> cursor position, and a single cursor pass then collects
+    # the records; random access by cursor position is not possible.
+    print(f'Loading manifest: {args.manifest}')
+    with open(args.manifest) as fh:
+        manifest = json.load(fh)
+    name_to_index = {}
+    for i, name in enumerate(manifest):
+        if name is not None and name not in name_to_index:
+            name_to_index[name] = i
+
+    # One receptor per *target* by default. Cross-docking specificity needs decoy
+    # pockets from different proteins; keeping several complexes of the same
+    # target would let a "decoy" pocket be the same protein and wash out the
+    # contrast the metric exists to measure.
+    wanted, chosen, seen_targets = {}, [], set()
+    for pt_file in test_files:
+        name = torch.load(pt_file, map_location='cpu')['name']
+        target = str(name).split('/')[0]
+        if args.one_per_target and target in seen_targets:
+            continue
+        if name not in name_to_index:
+            continue
+        seen_targets.add(target)
+        wanted.setdefault(name_to_index[name], []).append((pt_file.stem, target))
+        chosen.append(pt_file.stem)
+        if args.n_pockets and len(chosen) >= args.n_pockets:
+            break
+    print(f'{len(chosen)} pockets selected over {len(seen_targets)} targets.')
 
     print(f'Opening LMDB: {args.lmdb_path}')
     env = lmdb.open(str(args.lmdb_path), subdir=False, readonly=True,
                     lock=False, readahead=False, meminit=False)
 
-    missing, written = 0, 0
+    written, targets = 0, {}
     with env.begin() as txn:
-        for pt_file in tqdm(test_files, desc='Extracting'):
-            pt_data   = torch.load(pt_file, map_location='cpu')
-            name_val  = pt_data['name']
-            lmdb_key  = str(name_val.item() if hasattr(name_val, 'item') else name_val).encode()
-
-            raw = txn.get(lmdb_key)
-            if raw is None:
-                print(f'  WARNING: key {lmdb_key} not found, skipping {pt_file.name}')
-                missing += 1
+        for idx, (_, value) in enumerate(tqdm(txn.cursor(),
+                                              total=env.stat()['entries'],
+                                              desc='Scanning')):
+            if idx not in wanted:
                 continue
-
-            lmdb_data = pickle.loads(raw)
-            pocket_name = pt_file.stem  # e.g. complex_000001
-
-            write_pocket_pdb(lmdb_data,   args.outdir / f'{pocket_name}.pdb')
-            write_ligand_sdf(lmdb_data,   args.outdir / f'{pocket_name}_ref_ligand.sdf')
-            write_docking_box(lmdb_data,  args.outdir / f'{pocket_name}.box.txt',
-                              box_size=args.box_size)
-            written += 1
+            lmdb_data = pickle.loads(value)
+            for pocket_name, target in wanted[idx]:
+                write_pocket_pdb(lmdb_data,   args.outdir / f'{pocket_name}.pdb')
+                write_ligand_sdf(lmdb_data,   args.outdir / f'{pocket_name}_ref_ligand.sdf')
+                write_docking_box(lmdb_data,  args.outdir / f'{pocket_name}.box.txt',
+                                  box_size=args.box_size)
+                targets[pocket_name] = target
+                written += 1
 
     env.close()
+
+    # The target of each pocket, so cross-docking can pick decoys from other
+    # proteins rather than other poses of the same one.
+    with open(args.outdir / 'pocket_targets.json', 'w') as fh:
+        json.dump(targets, fh, indent=2)
+
     print(f'\nDone. {written} pockets written to {args.outdir}/')
-    if missing:
-        print(f'WARNING: {missing} pockets had no matching LMDB record.')
+    print(f'Wrote {args.outdir / "pocket_targets.json"} '
+          f'({len(set(targets.values()))} distinct targets).')
+    if written < len(chosen):
+        print(f'WARNING: {len(chosen) - written} pockets had no matching LMDB record.')
 
 
 if __name__ == '__main__':
