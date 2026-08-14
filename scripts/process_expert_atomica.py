@@ -309,9 +309,11 @@ def parse_args():
     parser.add_argument("--no_expert_filter", action="store_true",
                         help="ignore expert_split.pt and keep every complex in the "
                              "standard split. The expert filter is Vina < -8.5, which "
-                             "is strongly size-confounded (r = -0.58 between heavy-atom "
-                             "count and Vina score; kept ligands average 27.8 heavy "
-                             "atoms against 20.5 discarded). Selecting training data by "
+                             "is strongly size-confounded (r = -0.61 between heavy-atom "
+                             "count and Vina score over all 164,813 scored complexes; "
+                             "kept ligands average 28.8 heavy atoms against 19.2 "
+                             "discarded, and -0.55 / 27.7 / 20.1 within the 10-40 atom "
+                             "band this script keeps). Selecting training data by "
                              "docking also makes any later docking-based evaluation "
                              "circular.")
     parser.add_argument("--output", default="data/processed_expert_atomica")
@@ -337,8 +339,26 @@ def parse_args():
     parser.add_argument("--fragmentation", default="PS_300",
                         help="ligand fragmentation scheme; must match the checkpoint's "
                              "fragmentation_method")
-    parser.add_argument("--target_val_size", type=int, default=1000)
-    parser.add_argument("--target_test_size", type=int, default=1000)
+    parser.add_argument("--holdout_split", default="data/holdout_target_split.pt",
+                        help="target-disjoint val/test index lists from "
+                             "scripts/build_holdout_split.py. Without it, val and "
+                             "test are filled from complexes in NEITHER official "
+                             "split -- a pool sharing 1,327 targets with train, "
+                             "which makes every validation number within-target. "
+                             "Pass --legacy_fill to get that behaviour back.")
+    parser.add_argument("--holdout_expand", action="store_true",
+                        help="use every LMDB complex on the held-out targets "
+                             "instead of only the 100 officially-named ones. "
+                             "Equally target-disjoint, roughly 14x larger.")
+    parser.add_argument("--splits", default="train,val,test",
+                        help="which buckets to write; lets val/test be rebuilt "
+                             "without redoing train")
+    parser.add_argument("--legacy_fill", action="store_true",
+                        help="restore the old (contaminated) val/test filling")
+    parser.add_argument("--target_val_size", type=int, default=1000,
+                        help="only used with --legacy_fill")
+    parser.add_argument("--target_test_size", type=int, default=1000,
+                        help="only used with --legacy_fill")
     parser.add_argument("--stats_every", type=int, default=0,
                         help="print block/segment structure for every Nth written complex")
     parser.add_argument("--device", default=None)
@@ -349,9 +369,15 @@ def main():
     args = parse_args()
 
     output_base = Path(args.output)
-    dirs = {name: output_base / name for name in ("train", "val", "test")}
+    wanted = [s.strip() for s in args.splits.split(",") if s.strip()]
+    unknown = set(wanted) - {"train", "val", "test"}
+    if unknown:
+        print(f"Unknown split(s): {sorted(unknown)}")
+        return
+    dirs = {name: output_base / name for name in wanted}
     for path in dirs.values():
         path.mkdir(parents=True, exist_ok=True)
+    print(f"Writing splits: {', '.join(wanted)}")
 
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     print(f"Using device: {device}")
@@ -385,6 +411,36 @@ def main():
     std_train = set(std_split["train"])
     std_holdout = set(std_split["val"]) | set(std_split["test"])
     print(f"Standard split: train={len(std_train)}, val+test={len(std_holdout)}")
+
+    # --- val/test routing ---
+    # The official split's `val` and `test` are the identical index list, so it
+    # cannot supply two independent sets on its own. build_holdout_split.py
+    # partitions its 93 targets into disjoint halves; that file is the default
+    # source here. See docs/experiment-plan.md, "Split integrity".
+    val_indices = test_indices = None
+    if not args.legacy_fill:
+        print(f"Loading target-disjoint holdout from {args.holdout_split}...")
+        holdout = torch.load(args.holdout_split)
+        suffix = "_indices_expanded" if args.holdout_expand else "_indices"
+        val_indices = set(holdout["val" + suffix])
+        test_indices = set(holdout["test" + suffix])
+
+        # These are the invariants the old code violated. Checking them here
+        # costs nothing and makes a contaminated rebuild impossible to produce
+        # silently.
+        assert not (val_indices & test_indices), "val and test share complexes"
+        assert not (val_indices & std_train), "val overlaps the official train set"
+        assert not (test_indices & std_train), "test overlaps the official train set"
+        assert not (set(holdout["val_targets"]) & set(holdout["test_targets"])), \
+            "val and test share targets"
+
+        print(f"Holdout ({'expanded' if args.holdout_expand else 'official'}): "
+              f"val={len(val_indices)} complexes / {len(holdout['val_targets'])} targets, "
+              f"test={len(test_indices)} complexes / {len(holdout['test_targets'])} targets")
+    else:
+        print("WARNING: --legacy_fill reproduces the CONTAMINATED val/test buckets "
+              "(filled from a pool sharing 1,327 targets with train). Validation "
+              "numbers computed on them are within-target.")
 
     print(f"Opening LMDB: {args.lmdb}")
     env = lmdb.open(args.lmdb, subdir=False, readonly=True, lock=False,
@@ -426,16 +482,30 @@ def main():
 
             if idx in std_train:
                 bucket = "train"
-            elif idx in std_holdout:
-                # Held out upstream: skip to avoid leaking it into our train set.
-                note("in_standard_val_test")
-                continue
-            elif counts["val"] < args.target_val_size:
+            elif args.legacy_fill:
+                if idx in std_holdout:
+                    # Held out upstream: skip to avoid leaking it into train.
+                    note("in_standard_val_test")
+                    continue
+                if counts["val"] < args.target_val_size:
+                    bucket = "val"
+                elif counts["test"] < args.target_test_size:
+                    bucket = "test"
+                else:
+                    note("excess_candidate")
+                    continue
+            elif idx in val_indices:
                 bucket = "val"
-            elif counts["test"] < args.target_test_size:
+            elif idx in test_indices:
                 bucket = "test"
             else:
-                note("excess_candidate")
+                # Everything else -- the leftover pool the old code drew val and
+                # test from -- belongs to no split and is simply not used.
+                note("not_in_any_split")
+                continue
+
+            if bucket not in dirs:
+                note(f"split_not_requested_{bucket}")
                 continue
 
             want_stats = bool(args.stats_every) and total_success % args.stats_every == 0
