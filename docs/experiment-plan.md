@@ -1,183 +1,130 @@
 # Research plan: using ATOMICA's interaction semantics for ligand design
 
-## Where this stands
+**This is a handoff document.** It assumes no memory of the work. It records what
+was measured, what those measurements ruled out, what the current plan is and why,
+and the traps that have already cost time. Every claim points at the file it comes
+from. Numbers in this document were re-verified against the repository on
+2026-08-13; where a number elsewhere in the tree disagrees, that is noted.
+
+## Status
 
 | Phase | Question | Status |
 |---|---|---|
 | **0** | Is the interface representation geometry-sensitive? | **passed** — `results/phase0/README.md` |
-| **1** | Featurize ATOMICA the way it was pretrained | **done for the scoring path** — `atomica_interface/` |
-| **2** | Does a pose scorer built on it generalise to unseen systems? | **resolved: no** — `results/pose_scorer/README.md` |
-| **3** | Interaction hotspot fields | **next** — within-system, which is where the signal lives |
-| 4 | ATOMICA as sampling guidance | after 3; also within-system |
-| 5 | Contact-level scoring architecture | the way to attack cross-system, if pursued |
+| **1** | Featurize ATOMICA the way it was pretrained | **done** — `atomica_interface/`, back-ported to preprocessing on `fix/expert-preprocessing-featurization` |
+| **2** | Does a pose scorer generalise to unseen systems? | **resolved: no** — `results/pose_scorer/README.md` |
+| **3** | Interaction hotspot fields | **resolved: no** — `results/hotspot/README.md` |
+| **3b** | Does correcting the pocket block vocabulary restore conditioning? | **resolved: no** — `results/featurization_probe/README.md` |
+| **4** | **ATOMICA as a training-time critic** | **current work** — not yet implemented |
+| 5 | Conditioning on the partially-denoised ligand, low-noise steps only | after 4, and only if 4 shows signal |
 | 6 | ATOMICA as a selector over generated molecules | blocked by 2 |
-| 7 | Distillation to a pocket-only encoder | conditional on 3–4 |
+| 7 | Distillation to a pocket-only encoder | dead — see Phase 3b |
 
-## The result that should drive everything from here
+Three independent negatives and one positive. The positive is narrow and the
+negatives are well controlled, which is what makes them worth publishing.
 
-Two measurements that look contradictory, and are not:
+## The one result that should drive everything
+
+Two measurements that look contradictory and are not:
 
 | | Task | Result |
 |---|---|---|
-| Phase 0 | rank poses **within one pocket** | AUROC 1.000, clash- and size-controlled |
-| Phase 2 | rank poses **across unseen pockets** | 63.9% vs smina 59.7%, p = 0.65 — no better than a 2010 scoring function |
+| Phase 0 | rank poses **within one pocket** | AUROC 1.000, clash- and composition-controlled |
+| Phase 2 | rank poses **across unseen pockets** | 63.9% docking power vs smina 59.7%, McNemar p = 0.65 |
 
-The representation discriminates interaction geometry sharply *inside* a system
-and barely transfers *between* systems. Read as a failure that is discouraging.
-Read as a constraint it is directive, because applications divide cleanly along
-exactly that line:
+The representation discriminates interaction geometry sharply *inside* a system and
+barely transfers *between* systems. Read as failure that is discouraging; read as a
+constraint it is directive, because applications divide cleanly along exactly that
+line:
 
-- **Within-system** — ranking probe placements in one pocket (hotspot fields),
-  steering a denoising trajectory for one target (guidance), comparing poses of
-  one ligand. The Phase 0 regime. Viable.
-- **Cross-system** — a universal scoring function, a transferable selector,
-  conditioning a generator trained over thousands of different pockets. The
-  Phase 2 regime. Not supported by this evidence.
+- **Within-system** — comparing two states of *the same* complex: a predicted
+  ligand against the true ligand, one pose against another, a probe placement
+  against a neighbouring one. The Phase 0 regime. Viable.
+- **Cross-system** — a universal scoring function, a transferable selector, a
+  conditioning encoder trained over thousands of different pockets that must produce
+  comparable absolute embeddings. The Phase 2 regime. Not supported by this evidence.
 
-The original conditioning approach was cross-system, which is the harder regime,
-and it was attempted through a featurization that destroyed the signal entirely.
-The near-term work should be within-system, where the measured capability
-actually is.
+The original conditioning approach was cross-system — the harder regime — and it was
+attempted through a featurization that destroyed the signal entirely. Everything
+current is within-system.
 
-## Diagnosis: why the adapter approach could not have worked
-
-The cross-attention adapter is not the problem. The **featurization** is.
-
-ATOMICA is pretrained on *intermolecular interaction interfaces*. Its pretraining
-dataset is built around two interacting segments — `ATOMICA/data/dataset_pretrain.py`
-splits on `segment_ids == 0` / `== 1` and masks blocks within each separately. The
-representation it learned is of an **interaction between two entities**, organised
-over a hierarchy of chemically-typed **blocks** (residues, functional groups).
-
-`scripts/process_expert_atomica.py` feeds it:
-
-```python
-pocket_segment_ids = np.array([0, 0])                    # one segment, no partner
-pocket_B_types     = np.array([GLB, UNK])                # ALL pocket atoms in ONE
-pocket_block_lengths = np.array([1, n_pocket_atoms])     #   block, typed UNK
-```
-
-Two consequences, both fatal to the intended claim:
-
-1. **No interaction is present.** With a single segment there is no partner to
-   interact with, so none of ATOMICA's interaction semantics are engaged. This is
-   the analogue of asking a model trained on dialogue to embed one sentence with
-   the speaker stripped.
-2. **Block-level chemistry is erased.** ATOMICA's vocabulary is residue- and
-   fragment-level (`abrv2idx`, amino-acid symbols). Collapsing the pocket into one
-   `UNK` block means every pocket — regardless of composition — is described at
-   block level as a single unknown entity.
-
-What survives is per-atom element and local geometric context, which the EGNN
-already derives from coordinates. That is precisely the input from which one would
-expect a **generic drug-likeness shift with no pocket specificity** — which is what
-the A/B ablation measured (QED +13.9%, diversity −6.4%, no target-aware gain).
-
-The A/B result is not wasted: it is a clean documented negative for
-"naively-extracted foundation-model embeddings as a conditioning signal." It should
-be reported as such.
-
-**Governing principle for everything below: ATOMICA scores interfaces, so use it on
-interfaces.**
+**Governing principle: ATOMICA scores interfaces, so only ever use it on interfaces,
+and only ever ask it to compare two interfaces of the same complex.**
 
 ## The central obstacle, stated honestly
 
 ATOMICA needs two segments. At generation time the second segment — the ligand — is
-what we are trying to produce. Every design below is a different resolution of that
-tension, ordered by how much has to work for it to pay off:
+what we are trying to produce. Every design here is a different resolution of that
+tension:
 
-| Approach | Resolution of the obstacle |
+| Approach | Resolution | Verdict |
+|---|---|---|
+| Selection | score the interface *after* generating | blocked by Phase 2 |
+| Hotspot field | probe the pocket with surrogate fragments | **failed**, Phase 3 |
+| Distillation | learn a pocket-only encoder that anticipates the interface | **dead**, Phase 3b |
+| **Critic loss** | **the true ligand is a training label, not an input** | **current plan** |
+| Guidance | the model's own `x̂₀` is segment 1, at low noise | secondary, after the critic |
+
+## Resolved negative 1 — cross-system pose scoring (Phase 2)
+
+`results/pose_scorer/README.md`, `scripts/train_pose_scorer.py`,
+`scripts/featurize_block_level.py`.
+
+100-target benchmark, 72 solvable targets, 1,674 poses. Out-of-fold under
+`GroupKFold` **by target**, ridge alpha chosen by inner CV. Metric is CASF docking
+power: per target, is the top-ranked pose within 2 Å of the crystal pose.
+
+| Scorer | docking power | hits | mean per-target Spearman | vs smina |
+|---|---|---|---|---|
+| random (floor) | 15.7% | — | — | — |
+| **smina (baseline)** | **59.7%** | **43/72** | — | — |
+| graph (32-d) | 55.6% | 40/72 | +0.371 ± 0.084 | p = 0.70 |
+| pocket_pool (96-d) | 41.7% | 30/72 | +0.344 ± 0.077 | **p = 0.019, worse** |
+| all-block (288-d) | 63.9% | 46/72 | +0.400 ± 0.074 | p = 0.65 |
+
+Every variant is far above the 15.7% floor on targets never seen in training, so the
+head learns something real and transferable. It is simply not competitive with a
+fast, free, established baseline. Nothing here justifies a tool that is slower than
+smina and needs a GPU.
+
+**An earlier 22-target result was retracted.** `pocket_pool` had measured 68.2% with
+a paired Spearman gain of +0.127 (p ≈ 0.07); at 72 targets it measures 41.7% and the
+gain is −0.027 (p = 0.52). The effect reversed, not merely shrank. Two causes worth
+carrying: six feature sets were evaluated and the best reported, and 22 targets could
+not resolve differences of two or three targets (every McNemar p ≥ 0.69). Recording a
+selection bias does not remove it.
+
+### The benchmark
+
+`scripts/build_pose_benchmark.py` builds a CASF-style set from open RCSB data
+(CASF-2016 itself sits behind registration): single-protein X-ray complexes, each
+ligand redocked into its own pocket with smina, every pose labelled by symmetry-aware
+in-place RMSD. Output in `data/pose_benchmark/`, indexed by `manifest.csv`.
+
+Verified from `manifest.csv` as it stands on disk:
+
+| | |
 |---|---|
-| Selection | Score the interface *after* generating (ligand exists) |
-| Hotspot field | Probe the pocket with *surrogate* ligands (small fragments) |
-| Guidance | Use the partially-denoised ligand as segment 1 during sampling |
-| Distillation | Train a pocket-only encoder to predict the interface representation |
+| targets / poses / distinct ligands | 100 / 1,691 / 76 |
+| RMSD range | 0.17 – 34.96 Å |
+| poses within 2 Å | 6.2% |
+| targets with a near-native pose (solvable) | 72 / 100 |
 
-## Phase 0 — Is the representation geometry-sensitive? — PASSED
+`data/pose_benchmark/README.md` still describes the earlier 30-target / 520-pose
+build and should be updated. The pose-scorer figures use 1,674 poses because target
+`9WT9` (17 poses) is excluded — the PS_300 tokenizer raises on its haem ligand.
 
-The go/no-go gate. Full writeup in `results/phase0/README.md`; the result in short:
-native 4SP (NU6102) in CDK2 (1H1S, chain A) against rigid perturbations of it, 30
-poses per class, out-of-fold linear probe, via `scripts/phase0_pose_sensitivity.py`.
+At 6.2% of poses within 2 Å this set is harder than CASF-2016, whose decoys are
+curated across RMSD bins, and CASF has 285 targets. If cross-system scoring is ever
+revisited, registering for CASF-2016 is the way to settle comparability.
 
-| Test | displaced RMSD | size conf. | steric conf. | AUROC | perm p | Spearman |
-|---|---|---|---|---|---|---|
-| uncontrolled | 4.5–8.3 Å | 0.500 | **1.000** | 1.000 | 0.0005 | +0.855 |
-| uncontrolled, hard | 1.1–2.3 Å | 0.500 | 0.983 | 0.999 | 0.0005 | +0.919 |
-| **clash-controlled** | 1.8–3.5 Å | 0.500 | **0.696** | **1.000** | 0.0005 | **+0.927** |
-
-Only the last row is evidence, and getting to it is the substance of the phase. Two
-confounds each independently faked the result:
-
-- **Complex composition.** Re-trimming the pocket to each pose's contacts lets a
-  displaced ligand touch a different number of residues, so the classes separate on
-  complex size alone — worth AUROC ~0.70 here. Holding the binding site fixed across
-  every pose drives that shortcut to exactly 0.500.
-- **Steric clash.** Rigid perturbation pushes the ligand into the protein, so
-  minimum ligand–protein distance alone reaches AUROC 1.000, matching ATOMICA and
-  making the test meaningless. `--clash_free` rejects poses that clash worse than the
-  crystal pose, keeping both classes physically plausible and dropping the shortcut
-  to 0.696.
-
-Established: the representation encodes interaction geometry, is finely graded
-rather than merely detecting gross displacement, and is not reading complex size or
-steric overlap. Not established: anything beyond one pocket and one ligand, and
-nothing at all about ranking *different* molecules.
-
-**Still unrun:** the binder/decoy arm (`scripts/phase0_discriminate.py`). Phase 0
-implies it needs *docked* poses to be interpretable — a representation this
-pose-sensitive will swamp any binding signal with pose noise if fed arbitrarily
-oriented conformers. The benchmark built in Phase 2 supplies exactly the docked
-poses that test needs, which is a further reason to do Phase 2 first.
-
-## Phase 1 — Fix the featurization — DONE for the scoring path
-
-Implemented as the first-party package `atomica_interface/`, which builds inputs the
-way ATOMICA's own dataset pipeline does rather than reimplementing them:
-
-- `featurize.pocket_blocks_from_pdb` — one block per residue with real amino-acid
-  block types, via ATOMICA's `pdb_to_list_blocks`.
-- `featurize.ligand_blocks_from_mol` — ligand fragmented with **PS_300**, the scheme
-  named in `ATOMICA/pretrain/pretrain_model_config.json`; using any other scheme
-  silently degrades the block vocabulary against the checkpoint.
-- `featurize.ligand_from_pdb_het` — assigns bond orders from the component SMILES
-  template, since PDB records carry none and fragmentation without them is wrong.
-- `featurize.interface_data` — genuine two-segment records through
-  `blocks_to_data(pocket, ligand)`, pocket = segment 0, ligand = segment 1.
-- `scoring.load_encoder` — the supported route to pretrained representations is
-  `PredictionModel._load_from_pretrained`, which rebuilds the encoder with the
-  denoising heads off and exposes `infer()`. `DenoisePretrainModel` has no `infer`.
-
-Sanity check on a real complex: 2 segments, 55 pocket residue blocks + 8 ligand
-fragment blocks, 23 distinct block types — against the `[GLB, UNK]` 2-block
-single-segment input the original pipeline produced.
-
-**Not back-ported.** `scripts/process_expert_atomica.py` is still the old, broken
-path: it builds single-segment `UNK` inputs and calls `atomica_model.infer()` on a
-`DenoisePretrainModel`, which has no such method. Anything that regenerates the
-DiffSBDD conditioning cache must be rewritten onto `atomica_interface` first. Until
-then the Phase 3–6 conditioning work cannot be run at all.
-
-## Phase 2 — A pose scorer that generalises across systems — RESOLVED: NO
-
-**Outcome.** On 100 targets (72 solvable, 1674 poses), out-of-fold by target, a
-ridge head reaches 63.9% docking power against smina's 59.7% — 11 targets won,
-8 lost, McNemar p = 0.65. Comparable, not better. Full numbers and the retraction
-of an earlier 22-target result that did not replicate are in
-`results/pose_scorer/README.md`.
-
-The head is far above the 15.7% random floor, so it learns something real that
-transfers. It is simply not competitive with a fast, free, established baseline,
-and the gap between this and Phase 0's within-system result is the finding worth
-carrying forward.
-
-### Why this exists: the training-free route is insufficient
+### Why the training-free route was insufficient
 
 ATOMICA was pretrained to predict the rigid-body noise applied to a segment, so
 passing a **zero** noise target makes `translation_loss` equal the magnitude of the
 predicted correction — a pose energy with no labels and no fitting
-(`atomica_interface/energy.py`). If that worked, a tool would exist today with no
-training at all. Measured on the clash-controlled Phase 0 benchmark, 30 poses per
-class:
+(`atomica_interface/energy.py`). Measured on the clash-controlled Phase 0 benchmark,
+30 poses per class:
 
 | Scorer | AUROC | Spearman vs RMSD | Needs fitting? |
 |---|---|---|---|
@@ -185,217 +132,412 @@ class:
 | **training-free denoising energy** | **0.787** | +0.476 | **no** |
 | linear probe on the representation | 1.000 | +0.927 | yes, per system |
 
-The free lunch is not there. 0.787 sits marginally above a baseline that only
-measures how close the ligand is to the protein. The probe's 1.000 is not a
-competing number — it was fitted on the system it scores — it is an upper bound on
-what a head could extract. (The rotation head is worse than useless here: displaced
-poses score *lower* rotational correction than native ones, which is backwards.)
+0.787 sits marginally above a baseline that only measures how close the ligand is to
+the protein. The probe's 1.000 is not a competing number — it was fitted on the
+system it scores — it is an upper bound on what a head could extract. The rotation
+head is worse than useless: displaced poses score *lower* rotational correction than
+native ones, which is backwards.
 
-**Conclusion to carry forward: the information is in the representation, but the
-pretrained heads do not surface it. A usable scorer needs a head trained across
-systems, not a wrapper around the pretrained model.** That makes cross-system
-generalisation the deciding experiment rather than an optional check.
+## Resolved negative 2 — interaction hotspot fields (Phase 3)
 
-### The benchmark
+`results/hotspot/README.md`, `results/hotspot/hotspot_1h1s_4SP.json`,
+`scripts/hotspot_validate.py`, `atomica_interface/hotspot.py`.
 
-CASF-2016 is the standard docking-power benchmark but sits behind registration, so
-`scripts/build_pose_benchmark.py` constructs an equivalent from open RCSB data:
-single-protein X-ray complexes, each ligand redocked into its own pocket with smina,
-every pose labelled by symmetry-aware in-place RMSD to the crystal pose. Output in
-`data/pose_benchmark/`.
+Chemical probes on a grid through the pocket, scored with the training-free denoising
+energy; validation protocol from Radoux et al. 2016 (median percentile rank of
+crystal ligand atoms in the matching probe's field). CDK2 / NU6102 (1H1S chain A),
+5 Å site, 1.5 Å grid, 1,683 accessible non-clashing points, 6 probes × 2 orientations,
+28 ligand atoms scored.
 
-| | |
-|---|---|
-| targets / poses / distinct ligands | 30 / 520 / 25 |
-| RMSD range | 0.27 – 13.68 Å |
-| poses within 2 Å | 6% |
-| targets with a near-native pose (solvable) | 22 / 30 |
-| targets with both correct and incorrect poses (usable) | 22 / 30 |
+| Measure | Value | Reference |
+|---|---|---|
+| median percentile, matched probe | **52.4** | Radoux: 97 (fragments), 72 (leads) |
+| median percentile, **buriedness control** | **98.2** | the confound |
+| median percentile, random placement | 52.2 | the floor |
+| type specificity (matching probe wins) | **0.107** | chance = 0.167 |
 
-Two properties matter. Decoys come from a docking engine, so they are physically
-plausible and clash-free — unlike the Phase 0 perturbations, which were separable on
-steric overlap alone. And RMSD is computed with `rdMolAlign.CalcRMS`, never
-`GetBestRMS`: superimposing before measuring deletes exactly the rigid-body
-displacement that decides whether a pose is correct, and under it poses displaced by
-1.9, 3.5 and 6.3 Å all measure 0.00. The 8 targets where docking never recovered a
-sub-2 Å pose are unsolvable by any scorer and are excluded from docking-power
-figures, as CASF does.
+52.4 against a random floor of 52.2 is no information at all, and type specificity is
+*below* chance. The buriedness control at 98.2 is the useful part: protein neighbour
+count alone beats our field and would beat Radoux's published fragment number, which
+proves the harness can detect a field that predicts ligand positions. It detects one;
+the signal is simply absent from the ATOMICA field. Had that control been skipped,
+"ligand atoms land in the 98th percentile" would have looked like a success.
 
-### The next experiment, in order
+This is the **third** independent measurement placing the training-free denoising
+energy at a trivial baseline. Treat the pretrained heads as unusable as a scoring
+function and stop probing them.
 
-1. **Featurize** all 520 (pocket, pose) pairs with `atomica_interface` and cache the
-   representations.
-2. **Train a small head** on those representations with **target-wise splits**
-   (GroupKFold grouped by target), so no test protein is ever seen in training. This
-   is the cross-system generalisation test, and it is the gate on everything
-   downstream — a head that only works within a target is the per-system probe again.
-3. **Evaluate docking power**: per target, is the top-ranked pose within 2 Å.
-   Excluding the 8 unsolvable targets, i.e. over the 22 usable ones.
-4. **Baseline to beat:** the smina score already stored per pose in
-   `data/pose_benchmark/manifest.csv` (`smina_score` column). No extra runs needed.
+Not ruled out but not worth pursuing here: a *trained* readout on probe
+representations. That is supervised hotspot prediction from protein structure, which
+is PharmacoNet (Chem Sci 2024, MIT, protein-only, generalises to unseen targets).
+Reimplementing a published method with a weaker backbone is not a contribution.
 
-### Decision gate
+## Resolved negative 3 — the featurization diagnosis was only half right (Phase 3b)
 
-- **Beats or matches smina, with a different error profile** → a real tool exists.
-  Extract `atomica_interface` into its own repository, packaged properly: ATOMICA as
-  a git submodule rather than a vendored copy, weights as a GitHub Release asset.
-- **Fails** → do not conclude anything about ATOMICA yet. Check whether the
-  benchmark's difficulty is the cause first: at 6% of poses within 2 Å this set is
-  harder than CASF-2016, whose decoys are curated to be balanced across RMSD bins, so
-  a scorer can lose here on the pose distribution rather than on the representation.
-  Registering for CASF-2016 would give standard, comparable numbers and settle it.
+This is the most consequential correction in this document. **The diagnosis below was
+right about what was broken and wrong about what fixing it would buy.**
 
-### How this serves the original research question
+### What was broken
 
-The pose scorer is not a detour from *"does ATOMICA help the diffusion model?"* —
-it is the component both of the downstream phases are missing:
+`scripts/process_expert_atomica.py` originally fed ATOMICA:
 
-- **Phase 3 (selector)** replaces the ADMET composite, which the earlier
-  evolutionary experiment already identified as the binding-blind component of the
-  selection criterion. Selection needs a score over ligand–pocket interfaces; there
-  isn't one yet.
-- **Phase 5 (guidance)** needs a differentiable interaction score over the
-  pocket and a candidate pose. That is the same object.
+```python
+pocket_segment_ids   = np.array([0, 0])                  # one segment, no partner
+pocket_B_types       = np.array([GLB, UNK])              # ALL pocket atoms in ONE block
+pocket_block_lengths = np.array([1, n_pocket_atoms])     #   typed UNK
+```
 
-Two caveats, stated plainly so they are not quietly dropped later:
+Two defects. **No interaction is present** — with a single segment there is no
+partner, so none of ATOMICA's interaction semantics are engaged; this is the analogue
+of asking a model trained on dialogue to embed one sentence with the speaker
+stripped. And **block-level chemistry is erased** — ATOMICA's vocabulary is residue-
+and fragment-level (`abrv2idx`), so every pocket is described at block level as one
+unknown entity. What survives is per-atom element and local geometry, which the EGNN
+already derives from coordinates: exactly the input from which one would expect a
+generic drug-likeness shift with no pocket specificity.
 
-- **Recognition is necessary but not sufficient for generation.** Scoring poses well
-  does not show that a generator can be conditioned to produce good geometry. A
-  scorer that passes Phase 2 makes Phases 3–5 worth running; it does not predict
-  their outcome.
-- **Docking power is not screening or ranking power.** CASF separates them: docking
-  power is picking the right pose *of one molecule* (what Phase 5 guidance needs);
-  screening and ranking power are ordering *different molecules* (what Phase 3
-  selection actually needs). Only docking power is addressed so far. Phase 0 already
-  flagged this — pose sensitivity says nothing about ranking different molecules.
+That is what the A/B ablation measured (`results/ablation_summary.md`, 100 pockets,
+9,328 vs 9,246 valid molecules): QED 0.424 → 0.483 (+13.9% relative), diversity
+0.731 → 0.684 (−6.4% relative), no target-aware gain.
 
-## Phase 3 — ATOMICA as a selector
+### What the probe measured
 
-No retraining, no architecture. Generate with unmodified DiffSBDD, then rank
-candidates by ATOMICA interface score against the target pocket and keep the top
-fraction.
+`scripts/featurization_probe.py`, `results/featurization_probe/README.md`. Same 99
+pockets, same pocket-only setup, differing **only** in block vocabulary.
 
-This directly answers *"does ATOMICA help us design better molecules?"* without
-entangling that question with generative modelling. It composes with the existing
-`rl_loop/` selection stage, replacing or augmenting the ADMET composite.
+| | old `[GLB, UNK]` | new per-residue |
+|---|---|---|
+| blocks per pocket | 2.0 | 56.3 (17.9 distinct types) |
+| mean pairwise cosine between *different* pockets, graph repr | **1.0000** | **0.9917** |
+| mean pairwise cosine, unit repr | 1.0000 | 0.9999 |
+| composition probe R², graph | 0.201 | **0.176** |
+| composition probe R², unit | 0.165 | **0.108** |
 
-- Compare: random selection vs ADMET-composite vs Vina vs ATOMICA vs Vina+ATOMICA.
-- Evaluate the *selected set*, using the pocket-aware metrics below.
-- Cost: inference only.
+**Confirmed:** cosine 1.0000 between different pockets means every pocket mapped to
+the same direction in embedding space. The adapter was never conditioned on pocket
+identity — not attenuated, absent. (The residual R² ≈ 0.20 comes from vector
+*magnitude*, which still varied.)
 
-**Blocked on Phase 2**, and on the *ranking* side of it: selection ranks different
-molecules, which the pose benchmark does not measure. Expect to need a ranking-power
-evaluation (affinity-labelled complexes, e.g. PDBbind) before this phase means
-anything. If ATOMICA adds nothing over Vina here, that is a strong and cheap
-negative that saves Phases 4–5.
+**Refuted:** per-residue blocks with real amino-acid types barely move the
+representation — cosine falls only to 0.9917, and recoverable amino-acid composition
+gets *worse*, not better. A separate check on genuine two-segment records
+(pocket + ligand) over six unrelated targets gives 0.9248 (commit `dd1c756`); that is
+the only configuration that meaningfully de-degenerates, and it is a small sample.
 
-## Phase 4 — Interaction hotspot fields (the novel contribution)
+**Conclusion: the missing interaction partner was the binding defect, not the block
+vocabulary. Pocket-only ATOMICA encodings are degenerate regardless of block typing.**
 
-The idea with the most scientific upside, and it converts ATOMICA's interface
-knowledge into something both spatially specific and interpretable.
+Two things follow, and both save GPU time:
 
-**Construction.** Place small chemical probes — methane (hydrophobic), water or
-methanol (H-bond donor/acceptor), benzene (aromatic), ammonium/acetate (charged) —
-at grid points throughout the pocket. For each (probe type, position), evaluate the
-ATOMICA interface representation with pocket as segment 0 and probe as segment 1.
-The result is a field over space × probe type: *this subpocket favours a donor here,
-a hydrophobe there.*
+1. "Fix the pocket featurization and re-run the same conditioning" is ruled out. It
+   would reproduce the original result.
+2. **Phase 7 (distillation to a pocket-only encoder) is dead.** Its target — a
+   pocket-only embedding that anticipates interaction — is the object just measured
+   to be degenerate.
 
-This is a learned analogue of GRID / FTMap / SILCS hotspot mapping, derived from a
-foundation model rather than a force field, and it uses ATOMICA exactly as
-pretrained — two segments, real interaction, chemically-typed blocks.
+## The current direction — ATOMICA as a training-time critic
 
-**Validation, and this is the part that makes it a paper.** It is falsifiable
-without any generation at all: on held-out co-crystal complexes, compute the hotspot
-field from the *pocket alone*, then ask whether the true ligand's functional groups
-sit where the matching probe scores highest.
+Not an inference-time conditioning encoder. An auxiliary loss during fine-tuning:
 
-- Metric: enrichment of true ligand atoms in the top-k hotspot voxels, by
-  functional-group type, against a random-placement null.
-- Data: abundant (PDBbind, CrossDocked co-crystals). No docking required.
-- Baselines: distance-to-pocket-surface, buriedness, and a classical hotspot method.
+```
+L = L_diffusion + lambda * d( ATOMICA(pocket, x0_hat), ATOMICA(pocket, x_true) )
+```
 
-A hotspot map that recovers real ligand contacts is a useful medicinal-chemistry
-tool on its own, independent of the diffusion model.
+where `x0_hat` is the denoiser's predicted clean ligand at step *t*, `x_true` is the
+reference ligand, and ATOMICA is frozen.
 
-**Then use it for conditioning.** The field is spatially resolved, so conditioning
-on it is structurally capable of the spatial specificity the previous adapter could
-not express — the conditioning signal is now indexed by *position*, not just pocket
-identity. Concretely: voxelise the field, or attach per-probe-type scores to pocket
-atoms, and feed it to the denoiser with a distance-aware attention bias.
+Why this and not the alternatives, grounded in what has been measured:
 
-Note that Phase 2's finding applies here too: if the pretrained heads do not surface
-a usable pose signal, a probe field read straight off the pretrained model may be
-just as flat, and this phase may need the trained head as its scoring function.
+- **It only asks ATOMICA to distinguish right from wrong within one complex.** That
+  is the Phase 0 regime, measured at AUROC 1.000 with the composition and clash
+  confounds controlled. It never asks for a transferable absolute score, which is the
+  Phase 2 regime that failed (63.9% vs 59.7%, p = 0.65).
+- **Both encodings are genuine two-segment interfaces**, which the featurization
+  probe shows are the discriminative ones (0.9248 two-segment against 0.9917
+  pocket-only).
+- **Using the true ligand in a *loss* is not leakage — it is a label**, exactly as in
+  any supervised objective. Leakage would be using it as a *conditioning input* at
+  sampling time. This distinction is the crux and it is easy to get wrong; the
+  existing preprocessing cache gets it wrong (see below).
+- **ATOMICA is a frozen teacher, so inference needs no ATOMICA at all.** The
+  generator internalises the signal, stays fast, and cannot be bottlenecked by
+  ATOMICA failing to generalise at test time — which, per Phase 2, it does.
 
-## Phase 5 — ATOMICA as sampling guidance
+Practical notes for whoever implements it:
 
-Use ATOMICA as a differentiable interaction potential during denoising. At step *t*,
-take the model's predicted clean ligand `x̂₀`, form the two-segment complex with the
-pocket, and take the gradient of the ATOMICA interaction score with respect to
-ligand coordinates to steer sampling.
+- Fine-tune from the existing checkpoints in `my_logs/` (`condB_static_t_r0`,
+  `condC_timestep_adaptive_r0`, `condD_lora_r0`) or `checkpoints/`. Backbone frozen,
+  adapter-only or LoRA. Note that despite the directory names, no LoRA is implemented
+  anywhere in the tree (`MODIFICATIONS.md`); arm D is full backbone fine-tuning and
+  arm C is architecturally identical to B.
+- `d(·,·)` is a choice to make and report: cosine on the graph representation, or an
+  L2 on pooled unit representations. The graph representation is the one the probe
+  found least degenerate for two-segment records.
+- Apply the term over low-*t* steps where `x0_hat` is chemically plausible, or ramp
+  `lambda` with the noise level. ATOMICA has never seen a half-formed ligand.
+- Sanity gate before training anything: check that
+  `d(ATOMICA(pocket, x_true), ATOMICA(pocket, decoy))` is reliably larger than
+  `d(ATOMICA(pocket, x_true), ATOMICA(pocket, near-native))` on the pose benchmark.
+  If the distance is not ordered, the loss has no gradient worth following, and this
+  costs minutes rather than GPU-days to check.
 
-- Requires no DiffSBDD retraining, but does require the Phase 2 head as the scoring
-  function — the training-free energy is too weak to guide on.
-- **Key risk:** ATOMICA has never seen noisy or partially-formed ligands. Guide on
-  `x̂₀` rather than `x_t`, and only over low-noise steps. Sweep guidance strength and
-  the step window; report the diversity/affinity tradeoff rather than one setting.
-- Falls back gracefully: at guidance strength 0 it is exactly baseline DiffSBDD.
+### Secondary — conditioning on `x̂₀` during sampling
 
-This is the phase docking power is directly relevant to: steering a pose toward a
-near-native geometry is the same task as recognising one.
+Only if the critic shows signal. At step *t*, form the two-segment complex from the
+pocket and the model's predicted clean ligand `x̂₀`, and condition on (or take
+gradients through) its ATOMICA representation. Restrict to **low-noise steps only**,
+for the reason above. Falls back gracefully: at strength 0 it is exactly baseline
+DiffSBDD.
 
-## Phase 6 — Distillation (only if feed-forward conditioning is needed)
+### Three architecture defects that must be fixed first, if conditioning is attempted
 
-If Phases 4–5 show the interface representation is valuable but too slow for in-loop
-use, train a pocket-only encoder to regress the ATOMICA interface representation
-obtained from true complexes. That yields a pocket embedding which *anticipates*
-interaction, and it is the principled version of what the original adapter
-attempted — it solves the missing-second-segment problem by learning it rather than
-ignoring it.
+All in `DiffSBDD/equivariant_diffusion/dynamics.py`, all verified in the code as it
+stands:
 
-## Evaluation (applies to every generative phase)
+1. **No distance term.** `SE3EquivariantCrossAttention.forward(h_l, h_p, mask_l,
+   mask_p, t)` receives no coordinates; scores are `q · kᵀ` on scalar features only.
+   The module is geometry-blind and *structurally cannot express spatial
+   specificity* — it can say "this pocket wants a donor", never "a donor here".
+2. **It fires once, at the input.** The update is applied in `EGNNDynamics.forward`
+   as `h_atoms = h_atoms + self.adapter_scale * h_update`, *before* features are
+   concatenated and handed to the EGNN. The signal is then diluted through
+   `n_layers: 6` (`DiffSBDD/configs/crossdock_fullatom_cond_B.yml`).
+3. **Three overlapping magnitude controls.** `out_proj` is zero-initialised, a
+   sigmoid `gate` on the timestep multiplies the output, and `adapter_scale` is a
+   learned scalar initialised to 0.1. Three knobs on one quantity, one of which
+   forces a cold start; they interact and none is individually interpretable.
 
-The previous evaluation could not have detected pocket specificity. Replace it:
+## State of the data and infrastructure
+
+Read this section before touching anything under `data/`.
+
+### CrossDocked was never lost
+
+An earlier revision of this plan, and some commit messages, claimed the CrossDocked
+LMDB had been lost. **That was wrong.** Both files are on disk:
+
+| File | Size | Entries |
+|---|---:|---:|
+| `data/crossdocked_pocket10_processed.lmdb` | 7.29 GB | 164,814 |
+| `data/crossdocked_filtered.lmdb` | 6.23 GB | 132,469 |
+
+### Split integrity
+
+`data/crossdocked_split.pt` indexes the pocket10 LMDB in **cursor order**, not by
+numeric key (LMDB orders keys lexicographically: `'0'`, `'1'`, `'10'`, `'100'`, …).
+
+| | indices | distinct targets |
+|---|---:|---:|
+| `train` | 98,995 | 1,893 |
+| `val` | 100 | 93 |
+| `test` | 100 | 93 |
+
+Good news: the split is **target-aware** — zero targets shared between train and the
+held-out set. Two problems:
+
+1. **`val` and `test` are the identical index list.** There is no independent test
+   set at all.
+2. **The preprocessing val/test buckets are not target-disjoint from train.**
+   `scripts/process_expert_atomica.py` *skips* everything in the official holdout
+   ("held out upstream"), then fills `val` and `test` up to
+   `--target_val_size` / `--target_test_size` (default 1,000 each) from complexes in
+   *neither* official split. That leftover pool is 65,719 entries spanning 1,770
+   targets, of which **1,327 targets (32,771 entries) also appear in train**. Any
+   validation number computed on the current `val`/`test` directories is
+   substantially within-target.
+
+The LMDB holds 2,346 distinct targets; the official split covers 1,986 of them.
+
+`affinity_info.pkl` has 184,087 entries keyed by ligand filename without extension,
+each `{'rmsd', 'pk', 'vina'}`. Every one of the 164,814 LMDB complexes has a Vina
+score. Two entries carry the sentinel `vina = 999.0`; filter `vina >= 900` before any
+statistics.
+
+### The expert filter was dropped, and why that matters
+
+`expert_split.pt` (built by `scripts/create_expert_split.py`) keeps complexes with
+Vina < −8.5: 77,638 of 164,814, i.e. **52.9% of the data discarded**. Recomputed
+directly from the LMDB and `affinity_info.pkl`:
+
+| Measure | All 164,813 scored complexes | Within the 10–40 heavy-atom band the preprocessor keeps |
+|---|---:|---:|
+| Pearson r(heavy atoms, Vina) | **−0.61** | −0.55 |
+| mean heavy atoms, kept | 28.8 | 27.7 |
+| mean heavy atoms, discarded | 19.2 | 20.1 |
+| equal-size cohort by ligand efficiency (Vina / heavy atoms): overlap with expert cohort | 46% | 51% |
+| that cohort's mean heavy atoms | 19.6 | 19.6 |
+
+**It is largely a size filter.** Half the cohort changes if you control for ligand
+size, and the size-controlled cohort averages ten fewer heavy atoms. It also makes
+docking-based evaluation circular: selecting training data by Vina and then reporting
+Vina improvements measures the filter.
+
+The `--no_expert_filter` flag (commit `9b3279c`) keeps every complex in the standard
+split. Its help text quotes r = −0.58 and 27.8 / 20.5 heavy atoms; the recomputation
+above gives −0.61 and 28.8 / 19.2 over all complexes, −0.55 and 27.7 / 20.1 within
+the size band. Same conclusion, slightly different arithmetic — worth correcting in
+the source string when someone next touches that file.
+
+### Preprocessing rebuilt (branch `fix/expert-preprocessing-featurization`, unmerged)
+
+Two commits ahead of `main`: `dd1c756` (rebuild on the two-segment featurization) and
+`9b3279c` (`--no_expert_filter`). What changed:
+
+- Routes through `atomica_interface.scoring.load_encoder`, i.e.
+  `PredictionModel._load_from_pretrained` — the supported path, with denoising heads
+  disabled and `infer()` exposed. The old script called `.infer()` on a
+  `DenoisePretrainModel`, which defines no such method, so **it could not run at
+  all**.
+- Pocket is one block per residue with its real amino-acid type (segment 0), ligand
+  is PS_300 fragment blocks (segment 1). Verified structure: 67–101 blocks and 20–27
+  distinct block types per complex over 2 segments, against the old 2 blocks in 1
+  segment.
+- Asserts the alignment invariant that keeps `pocket_atomica_embeddings` row-aligned
+  with `pocket_coords` (the encoder prepends a synthetic global atom per segment; if
+  that is not accounted for, every downstream row is off by one and silently wrong).
+- The old element rejection list (`{H, C, N, O, F, P, S, Cl, Br, I}`) is preserved
+  verbatim so dataset composition stays comparable to the run it replaces.
+
+**The cache it writes contains ground-truth ligand information.** Each `.pt` holds
+`lig_coords`, `lig_one_hot`, `pocket_coords`, `pocket_one_hot` and
+`pocket_atomica_embeddings` `[n_pocket_atoms, 32]` — and that embedding is read off a
+two-segment encoding whose segment 1 is the *reference* ligand. It is therefore
+**not** usable as a sampling-time conditioning input; it is usable as a critic
+target. This is the leakage distinction above, made concrete. The script's docstring
+flags it; do not let it be mistaken for an oversight or quietly used as conditioning.
+
+**A run is in flight** (as of this writing): `python scripts/process_expert_atomica.py
+--no_expert_filter --stats_every 5000`, writing to `data/processed_expert_atomica/`.
+Observed rate ~440 complexes/min at ~101 KB each; `val` and `test` are already at
+their 1,000 caps and `train` is filling. Upper bound is the 98,995 train candidates
+minus size-filter rejections, so expect on the order of 10 GB and a few hours. Do not
+start it again while it is running and do not delete anything under `data/`.
+
+## Immediate next steps
+
+1. **Let the preprocessing run finish.** Check `train`/`val`/`test` counts and the
+   skip-reason tally it prints at the end; a large `size_filter_*` or
+   `unhandled_exception` count means the run needs revisiting rather than using.
+2. **Build a genuine val/test separation.** Split the 93 held-out targets in half
+   *by target* into disjoint val and test sets, and change
+   `scripts/process_expert_atomica.py` to fill its val/test buckets from those
+   targets instead of from complexes outside the official split. Both defects
+   documented above — `val == test`, and the leftover pool sharing 1,327 targets with
+   train — have to be fixed together or the fix is cosmetic.
+3. **Regenerate `size_distribution.npy`** with `scripts/create_2d_histogram.py`. The
+   file currently at `data/processed_expert_atomica/size_distribution.npy` dates from
+   November 2025 and describes the old, Vina-filtered dataset; `DiffSBDD/train.py`
+   loads it from the data directory and it is what conditions sampled ligand size.
+   With the size-confounded filter gone, the old histogram is biased large.
+4. **Review and merge `fix/expert-preprocessing-featurization`** into `main`.
+5. **Implement the critic loss** and run the cheap sanity gate first (see above).
+   Fine-tune from `my_logs/` checkpoints with the backbone frozen.
+6. **Evaluate with pocket-aware metrics** — see below.
+
+## Evaluation, for every generative phase
+
+The A/B evaluation could not have detected pocket specificity: QED is
+target-independent, so a QED gain is consistent with "conditioning narrowed the model
+toward generically drug-like chemistry" and with "conditioning improved pocket fit".
+Replace it:
 
 1. **Pocket-aware primary metrics.** Matched docking across arms, and **cross-docking
-   specificity** — dock each pocket's molecules against its own pocket and against
-   *m* others; a molecule designed for its pocket should beat arbitrary pockets. A
+   specificity** — dock each pocket's molecules against its own pocket and against *m*
+   others. A molecule designed for its pocket should beat arbitrary pockets; a
    generically drug-like molecule scores ≈ 0. This is the metric that separates the
    two hypotheses.
-2. **Correct statistics.** Analyse per pocket, not per molecule. The ~9,700
-   molecules per arm are nested within 100 pockets; treating them as independent is
-   pseudo-replication and inflates significance. Use paired tests across the 100
-   pockets and report the fraction of pockets improved, not just the mean shift.
-3. **Retain the ligand-only metrics** (QED/SA/Lipinski) as guardrails, never as
+2. **Analyse per pocket, not per molecule.** The ~9,300 valid molecules per arm are
+   nested within 100 pockets; treating them as independent is pseudo-replication and
+   inflates significance. Use paired tests across pockets and report the *fraction of
+   pockets improved*, not just the mean shift.
+3. **Docking-based evaluation is only non-circular now that the Vina filter is
+   dropped.** With `--no_expert_filter` the training set is not selected on the metric
+   being reported. Do not reintroduce the filter and then report Vina.
+4. **Retain the ligand-only metrics** (QED / SA / Lipinski) as guardrails, never as
    evidence of pocket specificity.
 
-For Phase 2 the equivalent rule is the target-wise split: report per-target docking
-power over held-out targets, never pose-level accuracy pooled across a set where the
-same protein appears in train and test.
+For any scoring work the equivalent rule is the target-wise split: report per-target
+figures over held-out targets, never pose-level accuracy pooled across a set where
+the same protein appears in train and test.
 
-## Sequencing and cost
+## Gotchas
 
-| Phase | Work | Cost | Gate |
-|---|---|---|---|
-| **0** | Pose-sensitivity gate | hours, inference | **passed** (AUROC 1.000 clash-controlled) |
-| **1** | Residue blocks + two-segment featurization | days, CPU | **done** for scoring; `process_expert_atomica.py` still to port |
-| **2** | Cross-system pose scorer on the 520-pose benchmark | days, GPU | **beats smina docking power on held-out targets?** |
-| **3** | ATOMICA as selector | inference only | beats Vina/ADMET selection? (needs ranking power, not just docking power) |
-| **4** | Hotspot field + co-crystal validation | weeks | hotspots recover true contacts? |
-| **5** | Sampling guidance | weeks, GPU | affinity gain at acceptable diversity cost |
-| **6** | Distillation | optional | only if 4–5 succeed but are too slow |
+Accumulated the hard way. Each of these has already cost time.
 
-Phase 2 is the current gate. If it fails and CASF-2016 confirms the failure is not
-the benchmark's difficulty, then the representation does not support a usable
-interface score and Phases 3–6 are not worth their cost.
+**Analysis**
+
+- `rdMolAlign.GetBestRMS` superimposes before measuring and therefore deletes exactly
+  the rigid-body displacement that decides whether a pose is correct. Poses displaced
+  by 1.9, 3.5 and 6.3 Å all measure **0.00**. Use `CalcRMS`. The first pose-benchmark
+  build used `GetBestRMS` and reported 71% of poses within 2 Å; the same poses under
+  `CalcRMS` give 6%. Both are symmetry-aware.
+- Any hotspot or pocket-scoring result must report a **buriedness baseline**. Protein
+  neighbour count alone reaches the 98.2nd percentile on the standard protocol and
+  will make a method that measures nothing look excellent.
+- Report per-target/per-pocket, and beware evaluating several feature sets and
+  reporting the best — that is how the retracted 22-target result happened.
+
+**ATOMICA**
+
+- The PS_300 tokenizer has no valence entry for iron and raises on haem-like ligands
+  (`KeyError: 'Fe'`). Target `9WT9` is skipped in both the pose-scorer and
+  featurization-probe runs for this reason. Catch it per complex; do not let it kill
+  a long run.
+- `DenoisePretrainModel` has **no** `infer()` method and its `forward` asserts on
+  denoising targets it is not given. The supported route to pretrained
+  representations is `PredictionModel._load_from_pretrained`, wrapped as
+  `atomica_interface.scoring.load_encoder`.
+- `blocks_to_data` prepends a synthetic global atom to each segment. Any code mapping
+  encoder output rows back to input atoms must account for it or every row is
+  misaligned — silently, with plausible-looking values.
+- Use the fragmentation scheme named in `ATOMICA/pretrain/pretrain_model_config.json`
+  (**PS_300**). Any other scheme silently degrades the block vocabulary against the
+  checkpoint.
+
+**Environment** — `~/.conda/envs/atomica-interface`, spec in `environment-atomica.yml`
+
+- `pip install` of anything that depends on torch silently replaces the CUDA build
+  with a CPU wheel and breaks `torch_scatter`. Use `--no-deps`.
+- Anaconda's default channels (`pkgs/main`, `pkgs/r`) require accepting a Terms of
+  Service and leak in from global conda config. The spec sets `nodefaults`; on the
+  command line use `--override-channels`.
+- MKL ≥ 2024.1 breaks torch 2.0.1 with `undefined symbol: iJIT_NotifyEvent`. Pin
+  below it.
+- e3nn must be **0.5.1** for torch 2.0.1. The installed environment has 0.5.1 but
+  `environment-atomica.yml` currently lists `e3nn` unpinned in its pip section — pin
+  it before anyone rebuilds the environment.
+- Working versions: python 3.10.4, torch 2.0.1 / CUDA 11.8, e3nn 0.5.1,
+  pytorch-scatter 2.1.2, pytorch-cluster 1.6.3, rdkit 2022.03.2, numpy 1.26.4.
+
+**Shell**
+
+- Piping a command into `grep` or `tail` masks its exit code — the pipeline reports
+  the *last* command's status. This has already hidden two silent failures. Redirect
+  to a file and inspect it, or check `PIPESTATUS`.
 
 ## What to do with the existing work
 
-Keep it and report it. The A/B ablation becomes the documented baseline showing that
-naive single-segment embeddings yield a drug-likeness prior rather than pocket
-conditioning — with the featurization diagnosis above as the explanation. That is a
-more useful contribution than a marginal QED improvement, and it motivates
-everything that follows.
+Keep it and report it. The value of this project now rests substantially on a
+**well-controlled negative result about foundation-model transfer**, and that is a
+more useful contribution than a marginal QED improvement:
 
-The adapter code stays in history; it should not be extended.
+- A pretrained interaction foundation model discriminates geometry within a complex
+  essentially perfectly (AUROC 1.000, with the two confounds that independently faked
+  the result identified and driven to chance).
+- The same model, with a head trained across systems, does not beat a 2010 scoring
+  function on held-out targets (63.9% vs 59.7%, p = 0.65).
+- Its training-free energy sits at the random floor as a hotspot field (52.4 vs 52.2),
+  while a trivial buriedness baseline reaches 98.2.
+- Its pocket-only encodings are degenerate (cosine 1.0000 between different pockets),
+  and correcting the block vocabulary does not repair it (0.9917) — only supplying the
+  second segment does (0.9248).
+- The A/B ablation is the documented consequence: naively-extracted single-segment
+  embeddings yield a generic drug-likeness prior (QED +13.9%) with no pocket
+  specificity, at a diversity cost (−6.4%).
+
+Each negative is paired with a control that proves the measurement could have
+detected the positive. That is what makes them evidence rather than absence of
+evidence.
+
+The adapter code stays in history. It should not be extended without fixing the three
+architecture defects first, and the current plan does not require it at all.
