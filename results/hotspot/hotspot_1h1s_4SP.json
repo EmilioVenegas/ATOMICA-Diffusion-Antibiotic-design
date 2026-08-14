@@ -1,0 +1,13 @@
+{
+  "pocket": "data/1h1s.pdb",
+  "ligand": "4SP",
+  "grid_points": 1683,
+  "spacing_A": 1.5,
+  "n_ligand_atoms_scored": 28,
+  "median_percentile_matched_probe": 52.4,
+  "median_percentile_buriedness_control": 98.2,
+  "median_percentile_random_control": 52.2,
+  "type_specificity_rate": 0.107,
+  "reference_radoux_fragments": 97,
+  "reference_radoux_leads": 72
+}
