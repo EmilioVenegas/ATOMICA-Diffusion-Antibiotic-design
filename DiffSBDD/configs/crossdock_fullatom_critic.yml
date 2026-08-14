@@ -61,10 +61,13 @@ critic_params:
   # sanity gate measures its ordering against RMSD before any training.
   distance: 'cosine'
   level: 'graph'
-  # lambda at t = 0. Cosine distance on a 32-d representation is small in
-  # absolute terms (order 1e-2 at 1 A of displacement, per
-  # tests/test_critic_roundtrip.py), so this needs to be large enough to matter
-  # against the diffusion loss. Tune it on a short run before committing.
+  # lambda at t = 0. THIS ALMOST CERTAINLY NEEDS RAISING. Measured on a real
+  # batch of 4 complexes with these settings: critic distance 0.0114, weighted
+  # 0.0070, against a diffusion nll of 0.60 -- so at max_weight 1.0 the critic
+  # is ~0.3% of the loss and will not move the model. Cosine distance on a 32-d
+  # representation is intrinsically small (order 1e-2 at 1 A of displacement,
+  # per tests/test_critic_roundtrip.py). Expect to need 1e1-1e2 here; sweep it
+  # on a short run and watch critic_distance/train actually fall.
   max_weight: 1.0
   # 'ramp' decays linearly to zero at cutoff*T; 'cutoff' is a hard switch;
   # 'constant' is the ablation. Restricting to low t is not a tuning choice --
